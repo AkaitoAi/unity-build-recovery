@@ -4,12 +4,23 @@ An unattended Windows x64 CLI for exporting Unity project data from your own bui
 
     .\Recover.ps1 -InputPath @('C:\Builds\MyGame_Data', 'C:\Builds\MyGame.apk') -WorkRoot 'C:\Recovery'
 
-Pass a Unity player data directory, a Unity asset or bundle, or a ZIP-based APK, XAPK, OBB, or ZIP. Keep tool and work directories outside input folders.
+Pass a Windows player build directory, a Unity player data directory, a Unity asset or bundle, or a ZIP-based APK, XAPK, OBB, or ZIP. For Windows IL2CPP, pass the whole build directory so recovery can find both GameAssembly.dll and the player data. Keep the work directory outside input folders.
 
-The first run downloads [AssetRipper 2.0.0](https://github.com/AssetRipper/AssetRipper/releases/tag/2.0.0) and checks the archive against the release asset's SHA-256 digest. Later runs reuse that installation. The script copies each input, hashes the copies, expands supported archives, and attempts to export a Unity project. It records per-input outcomes in recovery-report.json and keeps AssetRipper logs in each attempt folder. It never launches the input build.
+The script copies and hashes each input, expands supported archives, and detects Android DEX, managed assemblies, and IL2CPP binaries and metadata. It downloads tools into the local .tools cache as their stages become applicable.
 
-An export error triggers up to three attempts by default. Set -Attempts to change that limit. After exhausting the attempts, the runner moves on to the next input. A run containing a failed input exits with code 1. Supply failed inputs again to retry them in a fresh run.
+| Detected input | Automatic stages |
+| --- | --- |
+| Any supported input | AssetRipper project export and AssetStudioMod asset inventory |
+| Mono managed assemblies | .NET 8 SDK and ilspycmd for C# project output per assembly |
+| IL2CPP | Il2CppDumper for metadata, type/method layout, and dummy assemblies. When Android provides multiple ABIs, the runner prefers ARM64. |
+| Android DEX | JADX and Eclipse Temurin Java for separate Java source output |
 
-The workflow verifies the exported project structure. Unity Editor import, compilation, native IL2CPP method recovery, and gameplay reconstruction require separate work.
+The runner checks downloaded ZIPs against published checksums. The .NET SDK comes from Microsoft's .NET 8 release feed and ilspycmd comes from NuGet. The runner never launches the input build.
+
+Each applicable stage gets up to three attempts by default. Change the limit with -Attempts and the processing timeout with -TimeoutMinutes. The runner keeps attempt logs and partial output, continues with independent stages and later inputs, and records build detection, the exported Unity version, stage results, and paths in recovery-report.json. A partial or failed input sets exit code 1 after the batch finishes.
+
+For a trusted build, add -VerifyInUnity to run a batch import using an already installed, licensed matching Unity Editor in the default Unity Hub directory. Unity can load recovered code during import. The report records a failure if the matching editor is unavailable or batch verification fails. Install and activate Unity separately.
+
+Decompiled source and metadata stay beside the export for review. Native IL2CPP method bodies, merging recovered code into scenes and prefabs, gameplay reconstruction, and gameplay testing require separate work.
 
 This repository's code is MIT-licensed. Downloaded tools retain their upstream licenses. Keep builds and recovery outputs private.

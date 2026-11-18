@@ -3,14 +3,16 @@
 param(
     [Parameter(Mandatory)][string[]]$InputPath,
     [string]$WorkRoot = (Join-Path $PSScriptRoot 'recovery-output'),
-    [ValidateRange(1,10)][int]$Attempts = 3
+    [ValidateRange(1,10)][int]$Attempts = 3,
+    [ValidateRange(1,240)][int]$TimeoutMinutes = 120,
+    [switch]$VerifyInUnity
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-function Invoke-WithRetry([scriptblock]$Action) {
+function Invoke-WithRetry([scriptblock]$Operation) {
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-        try { return (& $Action) }
+        try { return (& $Operation) }
         catch {
             if ($attempt -eq $Attempts) { throw }
             Write-Warning "Attempt $attempt failed. $($_.Exception.Message)"
@@ -20,33 +22,10 @@ function Invoke-WithRetry([scriptblock]$Action) {
 }
 
 $toolRoot = Join-Path $PSScriptRoot '.tools'
-$version = '2.0.0'
-$toolDirectory = Join-Path $toolRoot "AssetRipper-$version"
-$exe = Join-Path $toolDirectory 'AssetRipper.GUI.Free.exe'
-if (!(Test-Path -LiteralPath $exe -PathType Leaf)) {
-    Invoke-WithRetry {
-        $staging = Join-Path $toolRoot ([guid]::NewGuid().ToString())
-        New-Item -ItemType Directory -Force -Path $staging | Out-Null
-        $name = 'AssetRipper_win_x64.zip'
-        $archive = Join-Path $staging $name
-        $payload = Join-Path $staging 'payload'
-        $release = Invoke-RestMethod "https://api.github.com/repos/AssetRipper/AssetRipper/releases/tags/$version" -TimeoutSec 45
-        $asset = $release.assets | Where-Object name -EQ $name | Select-Object -First 1
-        if ($asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Missing upstream SHA-256 digest.' }
-        $expected = $Matches[1]
-        Invoke-WebRequest "https://github.com/AssetRipper/AssetRipper/releases/download/$version/$name" -OutFile $archive -UseBasicParsing -TimeoutSec 600
-        if ((Get-FileHash -LiteralPath $archive).Hash -ne $expected) { throw 'Release checksum mismatch.' }
-        Expand-Archive -LiteralPath $archive -DestinationPath $payload
-        if (!(Test-Path -LiteralPath (Join-Path $payload 'AssetRipper.GUI.Free.exe') -PathType Leaf)) {
-            throw 'The release did not contain the expected executable.'
-        }
-        try { [IO.Directory]::Move($payload, $toolDirectory) }
-        catch { if (!(Test-Path -LiteralPath $exe -PathType Leaf)) { throw } }
-        Remove-Item -LiteralPath $archive
-    }
-}
+. (Join-Path $PSScriptRoot 'ToolSetup.ps1')
+. (Join-Path $PSScriptRoot 'RecoveryStages.ps1')
 
-function Export-Project([string]$Source, [string]$AttemptRoot) {
+function Export-Project([string]$Source, [string]$AttemptRoot, [string]$exe) {
     $socket = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $socket.Start()
     try { $port = $socket.LocalEndpoint.Port }
@@ -77,8 +56,8 @@ function Export-Project([string]$Source, [string]$AttemptRoot) {
         }
         if (!$ready) { throw 'AssetRipper did not start.' }
         $endpoint = if (Test-Path -LiteralPath $Source -PathType Container) { 'LoadFolder' } else { 'LoadFile' }
-        Invoke-WebRequest "$base/$endpoint" -Method Post -Body @{path = $Source} -UseBasicParsing -TimeoutSec 7200 | Out-Null
-        Invoke-WebRequest "$base/Export/UnityProject" -Method Post -Body @{path = $output} -UseBasicParsing -TimeoutSec 7200 | Out-Null
+        Invoke-WebRequest "$base/$endpoint" -Method Post -Body @{path = $Source} -UseBasicParsing -TimeoutSec ($TimeoutMinutes * 60) | Out-Null
+        Invoke-WebRequest "$base/Export/UnityProject" -Method Post -Body @{path = $output} -UseBasicParsing -TimeoutSec ($TimeoutMinutes * 60) | Out-Null
         $project = Join-Path $output 'ExportedProject'
         if (!(Test-Path -LiteralPath (Join-Path $project 'ProjectSettings\ProjectVersion.txt') -PathType Leaf) -or
             !(Test-Path -LiteralPath (Join-Path $project 'Assets') -PathType Container)) {
@@ -100,13 +79,13 @@ $results = @()
 foreach ($path in $InputPath) {
     $job = Join-Path $run ('{0:D3}' -f ($results.Count + 1))
     New-Item -ItemType Directory -Path $job | Out-Null
-    $result = [ordered]@{ input = $path; status = 'failed'; project = $null; error = $null }
+    $result = [ordered]@{ input = $path; status = 'failed'; project = $null; error = $null; build = $null; stages = [ordered]@{} }
     try {
         $item = Get-Item -LiteralPath $path -Force
         if ($item.PSIsContainer) {
             $prefix = $item.FullName.TrimEnd('\') + '\'
             if ($run.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
-                $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $toolRoot.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
                 throw 'Use input directories outside the tool cache and work directories.'
             }
         }
@@ -139,12 +118,48 @@ foreach ($path in $InputPath) {
             Remove-Item -LiteralPath $zip
         }
 
-        $result.project = Invoke-WithRetry {
-            $attemptRoot = Join-Path $job ('attempt-' + [guid]::NewGuid())
-            New-Item -ItemType Directory -Path $attemptRoot | Out-Null
-            Export-Project -Source $source -AttemptRoot $attemptRoot
+        $build = Get-BuildInfo $source $item.Extension
+        $result.build = @{
+            platform = $build.Platform
+            backend = $build.Backend
+            managedAssemblies = $build.Managed.Count
+            dexFiles = $build.Dex.Count
+            nativeBinaries = @($build.Native | ForEach-Object FullName)
+            metadataFiles = $build.Metadata.Count
         }
-        $result.status = 'exported'
+        Write-Host "$($item.Name): $($build.Platform), $($build.Backend)"
+        $result.project = Invoke-RecoveryStage 'asset-export' {
+            param($directory)
+            Export-Project $source $directory (Get-AssetRipper)
+        }
+        $null = Invoke-RecoveryStage 'asset-inventory' {
+            param($directory)
+            $studio = Install-ZipTool 'AssetStudioMod-0.19.0' 'https://github.com/aelurum/AssetStudioMod/releases/download/v0.19.0/AssetStudioModCLI_net472_win32_64.zip' 'cad5b9e2084dda85007012f94c6d3ad1944ba153796c4e80027792d0ba7be285' 'AssetStudioModCLI.exe'
+            Invoke-RecoveryTool $studio @($source,'-m','info') $directory 'assetstudio'
+            Join-Path $directory 'assetstudio.log'
+        }
+        if ($build.Backend -eq 'Mono') {
+            $null = Invoke-RecoveryStage 'mono' { param($directory) Invoke-MonoRecovery $build.Managed $directory }
+        }
+        if ($build.Backend -eq 'IL2CPP') {
+            $null = Invoke-RecoveryStage 'il2cpp' { param($directory) Invoke-Il2CppRecovery $build $directory }
+        }
+        if ($build.Dex.Count) {
+            $null = Invoke-RecoveryStage 'android' { param($directory) Invoke-AndroidRecovery $build.Dex $directory }
+        }
+        if ($result.project) {
+            $versionFile = Join-Path $result.project 'ProjectSettings\ProjectVersion.txt'
+            $match = Select-String -LiteralPath $versionFile -Pattern '^m_EditorVersion:\s*(\S+)' | Select-Object -First 1
+            if ($match) { $result.build.unityVersion = $match.Matches[0].Groups[1].Value }
+            if ($VerifyInUnity) {
+                $null = Invoke-RecoveryStage 'unity-import' {
+                    param($directory)
+                    Invoke-UnityVerification $result.project $result.build.unityVersion $directory
+                }
+            }
+            $result.status = 'exported'
+        }
+        if ($result.project -and $result.stages.Values.status -contains 'failed') { $result.status = 'partial' }
     }
     catch {
         $result.error = $_.Exception.Message
@@ -153,4 +168,4 @@ foreach ($path in $InputPath) {
     $results += [pscustomobject]$result
     ConvertTo-Json -InputObject $results -Depth 4 | Set-Content -LiteralPath (Join-Path $run 'recovery-report.json') -Encoding UTF8
 }
-if ($results.status -contains 'failed') { exit 1 }
+if ($results.status -contains 'failed' -or $results.status -contains 'partial') { exit 1 }
