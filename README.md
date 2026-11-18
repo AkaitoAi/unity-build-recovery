@@ -49,4 +49,16 @@ For a trusted build, add -VerifyInUnity to run a batch import using an already i
 
 Decompiled source and metadata stay beside the export for review. Native IL2CPP method bodies, merging recovered code into scenes and prefabs, gameplay reconstruction, and gameplay testing require separate work.
 
+## Optional gameplay reconstruction with Craft Anything
+
+Use this after recovery when you have an exported Unity project and a specific missing system to implement. Install the [Craft Anything CLI](https://github.com/storytold/craft-anything#get-started), sign in to its supported coding agent, and run `craft-anything-cli doctor`. The step can prompt for decisions while rebuilding.
+
+```powershell
+.\Rebuild-WithCraft.ps1 -ReportPath 'D:\Recovery\run-EXAMPLE\recovery-report.json' -InputNumber 1 -Task 'Implement a pause menu with Resume and Quit. It should toggle with Escape and restore the previous time scale when closed.'
+```
+
+Choose the report entry with `-InputNumber` (one-based, defaults to 1). A custom CLI path can be supplied with `-CraftCli`. The helper copies `Assets`, `Packages`, and `ProjectSettings` into a fresh `craft-unity-*` folder next to the report and asks Craft Anything to edit that copy. The project files and prompt can be processed by your configured coding-agent provider.
+
+Review the generated changes in the matching Unity Editor and test the requested behavior in Play Mode before bringing changes back into the recovered project. Craft Anything is an early-alpha tool and generated gameplay code needs review.
+
 This repository's code is MIT-licensed. Downloaded tools retain their upstream licenses. Keep builds and recovery outputs private.
