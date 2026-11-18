@@ -2,7 +2,33 @@
 
 An unattended Windows x64 CLI for exporting Unity project data from your own builds or builds you have permission to recover. Run in PowerShell 5.1 or newer.
 
-    .\Recover.ps1 -InputPath @('C:\Builds\MyGame_Data', 'C:\Builds\MyGame.apk') -WorkRoot 'C:\Recovery'
+## Quick start
+
+Open PowerShell and clone the repository with Git.
+
+```powershell
+git clone https://github.com/AkaitoAi/unity-build-recovery.git
+Set-Location .\unity-build-recovery
+```
+
+If you already cloned it, open that folder and run `git pull --ff-only`.
+
+Replace the example paths with your own build and output paths. Choose the command that matches your input.
+
+```powershell
+# Windows player build
+.\Recover.ps1 -InputPath 'D:\Builds\MyGame' -WorkRoot 'D:\Recovery'
+
+# Android APK
+.\Recover.ps1 -InputPath 'D:\Builds\MyGame.apk' -WorkRoot 'D:\Recovery'
+
+# Multiple inputs in a single run
+.\Recover.ps1 -InputPath @('D:\Builds\MyGame', 'D:\Builds\MyGame.apk') -WorkRoot 'D:\Recovery'
+```
+
+Open `recovery-report.json` in the `run-…` folder printed by the script. The `project` field gives the path to the exported Unity project. The `stages` field lists the output path or error for each stage.
+
+## Supported inputs and tools
 
 Pass a Windows player build directory, a Unity player data directory, a Unity asset or bundle, or a ZIP-based APK, XAPK, OBB, or ZIP. For Windows IL2CPP, pass the whole build directory so recovery can find both GameAssembly.dll and the player data. Keep the work directory outside input folders.
 
