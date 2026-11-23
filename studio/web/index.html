@@ -817,13 +817,21 @@ All 16 local recovery engines loaded and ready.
     async function runSingleStage(stageNum) {
       const src = document.getElementById('input-source').value.trim();
       const dest = document.getElementById('input-work').value.trim();
+      if (!src || !dest) return alert('Choose the package and a workspace folder first.');
       logMessage(`Executing Stage ${stageNum}...`);
-      await fetch('/api/pipeline/stage', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ source: src, destination: dest, stage: stageNum })
-      });
-      logMessage(`Stage ${stageNum} completed.`);
+      try {
+        const res = await fetch('/api/pipeline/stage', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ source: src, destination: dest, stage: stageNum })
+        });
+        const data = await res.json();
+        if (!res.ok || data.status === 'error') logMessage(`Stage ${stageNum} failed: ${data.message || res.status}`);
+        else if (data.status === 'empty') logMessage(`Stage ${stageNum} wrote no files. ${data.message}`);
+        else logMessage(`Stage ${stageNum} completed.`);
+      } catch (e) {
+        logMessage(`Stage ${stageNum} failed: ${e}`);
+      }
     }
 
     // Scripts & AI Classifier
@@ -893,7 +901,7 @@ All 16 local recovery engines loaded and ready.
       try {
         const res = await fetch('/api/scripts/read?path=' + encodeURIComponent(s.path) + '&work_folder=' + encodeURIComponent(document.getElementById('input-work').value.trim()));
         const code = await res.text();
-        document.getElementById('preview-code').innerText = code;
+        document.getElementById('preview-code').innerText = res.ok ? code : '// Cannot show this file (outside the workspace or not a text type).';
       } catch (e) {
         document.getElementById('preview-code').innerText = '// Unable to read file: ' + e;
       }
@@ -935,28 +943,33 @@ All 16 local recovery engines loaded and ready.
       selectRecommendedGameplay();
       logMessage('🎯 Selecting gameplay scripts and scaffolding the project...');
       const dest = document.getElementById('input-work').value.trim();
-      await fetch('/api/scripts/auto-playable-preset', {
+      if (!dest) return alert('Choose a workspace folder first.');
+      const presetRes = await fetch('/api/scripts/auto-playable-preset', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ work_folder: dest })
       });
+      if (!presetRes.ok) { const err = await presetRes.json(); return alert('Could not scaffold: ' + (err.message || presetRes.status)); }
       alert('Scaffold written. Gameplay scripts were selected and placeholder SDK stubs added where the game does not ship the SDK. Open the project in Unity and check the console: compilation is not verified.');
     }
 
     async function exportSelectedScripts() {
       const dest = document.getElementById('input-work').value.trim();
       const selected = scriptsData.filter(s => s.is_selected);
+      if (!dest) return alert('Choose a workspace folder first.');
       const res = await fetch('/api/scripts/export', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ work_folder: dest, scripts: selected })
       });
       const data = await res.json();
-      alert(`Export Complete! ${data.exported} scripts placed into Assets/_Project/Scripts/`);
+      if (!res.ok) return alert('Export failed: ' + (data.message || res.status));
+      alert(`Export complete: ${data.exported} script(s) copied into Assets/_Project/Scripts/. ${data.skipped} skipped (unselected, dump.cs, or already in the project).`);
     }
 
     async function openReconstructedInUnity() {
       const dest = document.getElementById('input-work').value.trim();
+      if (!dest) return alert('Choose a workspace folder first.');
       logMessage('Launching Unity Editor on ' + dest + '/05_project...');
       await fetch('/api/open-unity', {
         method: 'POST',
@@ -1129,7 +1142,7 @@ All 16 local recovery engines loaded and ready.
 
     // Auto inspect on load
     window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(quickInspect, 400);
+      if (document.getElementById('input-source').value.trim()) setTimeout(quickInspect, 400);
       loadToolsHealth();
     });
   </script>

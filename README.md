@@ -30,7 +30,7 @@ A Python UI that scans an APK, XAPK or ZIP, unpacks it, runs the recovery tools 
 ### Requirements
 
 - Windows x64.
-- Python 3.10 or later with Tk (the python.org installer includes it). No pip packages are needed.
+- Python 3.10 or later with Tk (the python.org installer includes it). No pip packages are needed. The launcher uses `pyenv\Scripts\pythonw.exe` beside the tool root if present, then `pythonw` on PATH, then the `pyw` launcher.
 - Microsoft Edge or Google Chrome. The UI opens in an app-style window of whichever is installed.
 - The recovery tools, in the folders listed below.
 
@@ -47,7 +47,7 @@ The studio finds its tools in this order: the `RE_TOOLS` environment variable, t
 | `jadx\bin\jadx.bat` | JADX, plus a JDK 21 or later under `C:\Program Files\Eclipse Adoptium` | Java source from Android DEX |
 | `ghidra\`, `android-sdk\ndk\<version>` | Ghidra, Android NDK | Symbol import (optional) |
 
-The Tools tab shows PASS or FAIL for each folder. The CLI's `.tools` folder uses versioned names such as `AssetRipper-2.0.0`, which the studio does not look for. To use the CLI's tools anyway, point `RE_TOOLS` at a folder that has the plain names above.
+The Tools tab shows PASS or FAIL for each folder. The CLI's `.tools` folder uses versioned names such as `AssetRipper-2.0.0`, which the studio does not look for. To use the CLI's tools anyway, point `RE_TOOLS` at a folder that has the plain names above. Ghidra and ILSpy cannot be updated from the Tools tab; replace their folders by hand.
 
 `studio\env.ps1` is optional. Dot-source it in your own PowerShell session if you want these tools on PATH. The launcher does not use it.
 
@@ -64,14 +64,18 @@ The launcher starts a server on `127.0.0.1:5899` and opens it in an Edge or Chro
 1. Intake: copies the package to `00_original`, hashes it.
 2. Unpack: 7-Zip into `01_extracted`, including nested APKs in an XAPK.
 3. Asset rip: AssetRipper headless export into `02_assetripper`.
-4. Code recovery: Il2CppDumper or Cpp2IL for IL2CPP into `03_il2cpp`, JADX for Java into `04_jadx`, and the readable C# into `03_scripts`.
+4. Code recovery: Il2CppDumper or Cpp2IL for IL2CPP into `03_il2cpp` (its `dump.cs` is copied to `03_scripts`), and JADX for Java into `04_jadx`.
 5. Project folder: copies the ripped assets and project settings into `05_project`, adds a package manifest and an assembly definition, and adds placeholder SDK stubs only for SDKs the game does not already ship.
 
-A stage counts as failed when it writes no files. The report lists each stage's result.
+A stage counts as failed when it writes or refreshes no files. The report lists each stage's result.
+
+Use a new, empty workspace folder for each game. The studio records the package hash in `.run.json` and refuses to run a different package in the same folder. Re-running the same package in its workspace is fine.
+
+The Script Studio tab lists the C# that AssetRipper recovered. Step 5 copies those files into the project, so "Export Selected" only adds scripts from elsewhere (it skips files already in the project, `dump.cs` and unselected ones) and renames name clashes instead of overwriting.
 
 ### Security notes
 
-The server accepts only requests that come from its own page: it checks the Host and Origin headers and a token generated at each launch, and it limits file reads and script copies to the work folder. Tool installs from the Tools tab must match the SHA-256 digest published with the GitHub release, and zip paths are checked before extraction. REA, which installs through npm, has no digest check; the install runs with `--ignore-scripts`. A digest from the same release page detects a corrupted download, not a compromised release.
+The server accepts only requests that come from its own page: it checks the Host and Origin headers and a token generated at each launch. It needs a full-path workspace (not a drive root, and not inside the studio or tool folders), limits file reads and script copies to that workspace, and runs one recovery or install at a time. Any program on your PC that can reach `127.0.0.1:5899` can fetch the page and its token, so do not run the studio on a shared machine. Tool installs from the Tools tab are extracted to a temporary folder and moved into place only if they contain the expected files. They must match the SHA-256 digest published with the GitHub release, and zip paths are checked before extraction. REA, which installs through npm, has no digest check; the install runs with `--ignore-scripts`. A digest from the same release page detects a corrupted download, not a compromised release.
 
 ### Configuration
 

@@ -36,7 +36,7 @@ function Get-AssetRipper {
 
 function Get-DotNet {
     $metadata = Invoke-WithRetry {
-        Invoke-RestMethod 'https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/8.0/releases.json' -TimeoutSec 45
+        Invoke-RestMethod 'https://builds.dotnet.microsoft.com/dotnet/release-metadata/8.0/releases.json' -TimeoutSec 45
     }
     $sdk = $metadata.releases | ForEach-Object { $_.sdks } |
         Where-Object version -EQ $metadata.'latest-sdk' | Select-Object -First 1

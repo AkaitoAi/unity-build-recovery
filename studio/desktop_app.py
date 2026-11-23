@@ -747,7 +747,9 @@ class ModernRecoveryStudio(tk.Tk):
             messagebox.showwarning("Missing Project", "The project has not been reconstructed yet. Run the pipeline first.")
             return
 
-        open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
+        open_bat = os.path.join(os.path.dirname(proj_dir), "Open_In_Unity.bat")
+        if not os.path.exists(open_bat):
+            open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
         if os.path.exists(open_bat):
             self.log(f"Launching Unity Editor via {open_bat}...")
             subprocess.Popen([open_bat], shell=True)

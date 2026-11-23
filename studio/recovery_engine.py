@@ -11,6 +11,8 @@ Executes the full recovery pipeline completely offline:
 
 import os
 import re
+import json
+import time
 import shutil
 import subprocess
 import datetime
@@ -50,6 +52,41 @@ class RecoveryPipeline:
                 total += len(files)
         return total
 
+    @staticmethod
+    def newest_mtime(*folders) -> float:
+        """Modification time of the newest file under the folders, or 0 when there are none."""
+        newest = 0.0
+        for folder in folders:
+            for root, _dirs, files in os.walk(folder):
+                for name in files:
+                    try:
+                        newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+                    except OSError:
+                        pass
+        return newest
+
+    def claim_workspace(self, info: dict) -> None:
+        """Refuses to mix two different games in one work folder.
+
+        Stages reuse and overwrite what is already in the folder, so a second game would
+        inherit the first game's extracted files, dump.cs and dummy assemblies.
+        """
+        os.makedirs(self.work_folder, exist_ok=True)
+        marker = os.path.join(self.work_folder, ".run.json")
+        sha = str(info.get("sha256") or "")
+        if os.path.exists(marker):
+            try:
+                with open(marker, "r", encoding="utf-8") as handle:
+                    previous = json.load(handle).get("sha256", "")
+            except Exception:
+                previous = ""
+            if previous and sha and previous != sha:
+                raise ValueError("This work folder already holds a different package. "
+                                 "Choose an empty folder for each game.")
+            return
+        with open(marker, "w", encoding="utf-8") as handle:
+            json.dump({"sha256": sha, "name": info.get("name", "")}, handle)
+
     def record(self, stage: str, ok: bool, detail: str = "") -> bool:
         """Records the real outcome of a stage and says so in the console."""
         ok = bool(ok)
@@ -77,6 +114,7 @@ class RecoveryPipeline:
             self.log(f"Copying game package to 00_original...")
             shutil.copy2(self.input_file, dest)
         else:
+            os.utime(dest, None)  # mark it as checked on this run
             self.log("Original copy already present in 00_original.")
 
         self.log(f"Game: {info.get('name')}")
@@ -87,6 +125,8 @@ class RecoveryPipeline:
 
     def run_stage_1_extract(self, info: dict) -> bool:
         self.log(f"--- [STAGE 1] Unpacking Package with 7-Zip ---")
+        if not os.path.exists(SEVEN_ZIP):
+            raise FileNotFoundError(f"7-Zip not found at {SEVEN_ZIP}. Install it there or set RE_TOOLS.")
         cmd = [SEVEN_ZIP, "x", self.input_file, f"-o{self.dir_01_extracted}", "-y"]
         self.log(f"Executing: {' '.join(cmd)}")
         res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
@@ -106,6 +146,15 @@ class RecoveryPipeline:
                     sub_res = subprocess.run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
                     if sub_res.returncode != 0:
                         self.log(f"  7-Zip exited with code {sub_res.returncode} for {f}")
+
+        if res.returncode == 0:
+            now = time.time()  # a re-run over identical files still counts as a fresh extraction
+            for root, _dirs, files in os.walk(self.dir_01_extracted):
+                for name in files:
+                    try:
+                        os.utime(os.path.join(root, name), (now, now))
+                    except OSError:
+                        pass
 
         count = sum(len(files) for _, _, files in os.walk(self.dir_01_extracted))
         self.log(f"Stage 1 Complete. Extracted {count} files to 01_extracted.")
@@ -279,10 +328,18 @@ class RecoveryPipeline:
                 "-AssetRipperExe", os.path.join(TOOLS_ROOT, "AssetRipper", "AssetRipper.GUI.Free.exe")
             ]
             self.log(f"Running AssetRipper on 01_extracted...")
-            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                     stdin=subprocess.DEVNULL, timeout=2400)
+            except subprocess.TimeoutExpired:
+                self.log("  [AssetRipper] timed out after 40 minutes.")
+                return False
             for line in res.stdout.splitlines():
                 if line.strip():
                     self.log(f"  [AssetRipper] {line.strip()}")
+            if res.returncode != 0:
+                self.log(f"  [AssetRipper] exited with code {res.returncode}: "
+                         f"{(res.stderr or '').strip()[:300]}")
         else:
             self.log("AssetRipper headless script not found (scripts/assetripper-headless.ps1); "
                      "the AssetRipper stage did NOT run.")
@@ -382,7 +439,7 @@ class RecoveryPipeline:
 
         # Newest JADX wins: the folders are jadx, jadx-1.5.7 and so on.
         candidates = []
-        for entry in os.listdir(TOOLS_ROOT):
+        for entry in (os.listdir(TOOLS_ROOT) if os.path.isdir(TOOLS_ROOT) else []):
             if entry.lower().startswith("jadx"):
                 for sub in (os.path.join(TOOLS_ROOT, entry, "bin", "jadx.bat"),
                             os.path.join(TOOLS_ROOT, entry, "jadx.bat")):
