@@ -16,7 +16,7 @@ function Invoke-WithRetry([scriptblock]$Operation) {
         catch {
             if ($attempt -eq $Attempts) { throw }
             # These failures repeat identically, so retrying only multiplies the wait.
-            if ($_.Exception.Message -match 'timed out|requires both|produced no dump|Could not identify|was not found in the default|contains a symbolic link|checksum verification|unsafe archive') { throw }
+            if ($_.Exception.Message -match '^[\w-]+ timed out\.$|requires both|produced no dump|Could not identify|was not found in the default|contains a symbolic link|checksum verification|unsafe archive') { throw }
             Write-Warning "Attempt $attempt failed. $($_.Exception.Message)"
             Start-Sleep -Seconds (5 * $attempt)
         }

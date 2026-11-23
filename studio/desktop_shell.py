@@ -33,7 +33,10 @@ PROFILE_DIR = os.path.join(
 
 # Chrome is listed first: in app mode it opens straight into the window, while Edge tends to
 # show its own welcome/sign-in screen the first time a new profile folder is used.
+_LOCAL = os.environ.get("LOCALAPPDATA", "")
 BROWSERS = [
+    os.path.join(_LOCAL, "Google", "Chrome", "Application", "chrome.exe"),
+    os.path.join(_LOCAL, "Microsoft", "Edge", "Application", "msedge.exe"),
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -185,7 +188,9 @@ def main():
     finally:
         # Only stop the server if this launcher started it and owned the window.
         if own_server and server is not None and server.poll() is None:
-            server.terminate()
+            # taskkill /T also ends the PowerShell and AssetRipper processes the server started.
+            subprocess.run(["taskkill", "/PID", str(server.pid), "/T", "/F"],
+                           capture_output=True, stdin=subprocess.DEVNULL)
             try:
                 server.wait(timeout=5)
             except Exception:

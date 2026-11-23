@@ -211,22 +211,38 @@ def scan_and_classify_directory(scripts_dir: str) -> List[ScriptItem]:
     results.sort(key=lambda x: (category_order.get(x.category, 99), x.filename.lower()))
     return results
 
-def export_selected_scripts(items: List[ScriptItem], target_scripts_dir: str) -> Tuple[int, int]:
-    """Exports all selected scripts into target directory."""
+def export_selected_scripts(items, target_scripts_dir, already_in_project=()):
+    """Copies selected scripts into target_scripts_dir. Returns (exported, skipped).
+
+    Files under any folder in already_in_project were copied into the project by the
+    scaffold stage, so copying them again would define every type twice. Name clashes
+    between different source files get a numeric suffix instead of overwriting.
+    """
     os.makedirs(target_scripts_dir, exist_ok=True)
     exported = 0
     skipped = 0
+    inside = [os.path.normcase(os.path.realpath(p)) for p in already_in_project if p]
 
     for item in items:
-        if not item.is_selected or item.filename.lower() == "dump.cs":
-            skipped += 1  # dump.cs is a pseudo-C# listing and does not compile
+        source = os.path.normcase(os.path.realpath(item.filepath))
+        if (not item.is_selected or item.filename.lower() == "dump.cs"
+                or any(source.startswith(root + os.sep) for root in inside)):
+            skipped += 1  # unselected, a pseudo-C# dump, or already in the project
             continue
 
         cat_folder = re.sub(r"[^\w\s-]", "", item.category).strip().replace(" ", "_")
         dest_folder = os.path.join(target_scripts_dir, cat_folder)
         os.makedirs(dest_folder, exist_ok=True)
 
-        dest_file = os.path.join(dest_folder, os.path.basename(item.filename))
+        name = os.path.basename(item.filename)
+        dest_file = os.path.join(dest_folder, name)
+        stem, ext = os.path.splitext(name)
+        counter = 1
+        while os.path.exists(dest_file):
+            if os.path.getsize(dest_file) == os.path.getsize(item.filepath):
+                break  # same file exported again
+            dest_file = os.path.join(dest_folder, f"{stem}_{counter}{ext}")
+            counter += 1
         shutil.copy2(item.filepath, dest_file)
         exported += 1
 

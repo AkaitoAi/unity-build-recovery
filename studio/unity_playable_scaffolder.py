@@ -171,6 +171,17 @@ def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title
             "com.unity.modules.ui": "1.0.0"
         }
     }
+    if os.path.exists(manifest_path):
+        # Unity or the rip already wrote one: add only the packages it lacks.
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                existing_manifest = json.load(f)
+            deps = existing_manifest.setdefault("dependencies", {})
+            for key, value in manifest_data["dependencies"].items():
+                deps.setdefault(key, value)
+            manifest_data = existing_manifest
+        except Exception:
+            pass
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest_data, f, indent=2)
 

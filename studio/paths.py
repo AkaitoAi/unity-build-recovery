@@ -22,3 +22,7 @@ def resolve_tools_root():
 
 
 TOOLS_ROOT = resolve_tools_root()
+try:
+    os.makedirs(TOOLS_ROOT, exist_ok=True)  # a fresh clone has no .tools folder yet
+except OSError:
+    pass

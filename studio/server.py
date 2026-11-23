@@ -73,6 +73,51 @@ PIPELINE_STATE = {
 }
 PIPELINE_LOCK = threading.Lock()
 
+
+def _inside(child: str, root: str) -> bool:
+    child = os.path.normcase(os.path.realpath(child))
+    root = os.path.normcase(os.path.realpath(root))
+    try:
+        return os.path.commonpath([child, root]) == root
+    except ValueError:  # different drives
+        return False
+
+
+def resolve_work(path, must_exist: bool = False) -> str:
+    """Validates a work folder from the page. Raises ValueError with a message for the user."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Choose a workspace folder first.")
+    path = path.strip()
+    if not os.path.isabs(path):
+        raise ValueError("The workspace must be a full path such as D:\\Recovery\\MyGame.")
+    real = os.path.realpath(path)
+    if os.path.dirname(real) == real:
+        raise ValueError("Do not use a drive root as the workspace.")
+    for protected in (TOOLS_ROOT, APP_DIR):
+        if _inside(real, protected):
+            raise ValueError("The workspace cannot be inside the studio or tools folder.")
+    if must_exist and not os.path.isdir(real):
+        raise ValueError("That workspace folder does not exist yet. Run recovery first.")
+    return real
+
+
+def AR_SCRIPTS(work_folder: str) -> str:
+    """Scripts AssetRipper recovered; the scaffold stage already copied them into the project."""
+    return os.path.join(work_folder, "02_assetripper", "ExportedProject", "Assets", "Scripts")
+
+
+def acquire_run() -> bool:
+    with PIPELINE_LOCK:
+        if PIPELINE_STATE["running"] or install_snapshot()["running"]:
+            return False
+        PIPELINE_STATE["running"] = True
+        return True
+
+
+def release_run() -> None:
+    with PIPELINE_LOCK:
+        PIPELINE_STATE["running"] = False
+
 # Names of the bundled tools, matched against log lines to show the one in use.
 PIPELINE_TOOLS = (
     "AssetRipper", "Il2CppDumper", "Cpp2IL", "JADX", "jadx", "7-Zip", "7z",
@@ -215,7 +260,21 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             body = json.loads(post_data.decode("utf-8"))
         except Exception:
             body = {}
+        if not isinstance(body, dict):
+            body = {}
 
+        try:
+            self._dispatch_post(path, parsed, body)
+        except ValueError as exc:
+            self.send_json({"status": "error", "message": str(exc), "stages": [], "failed": []}, status=400)
+        except Exception as exc:
+            try:
+                self.send_json({"status": "error", "message": f"{type(exc).__name__}: {exc}",
+                                "stages": [], "failed": []}, status=500)
+            except Exception:
+                pass
+
+    def _dispatch_post(self, path, parsed, body):
         if path == "/api/inspect":
             self.handle_inspect(body)
         elif path == "/api/pipeline/start":
@@ -229,9 +288,13 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         elif path == "/api/scripts/auto-playable-preset":
             self.handle_auto_playable_preset(body)
         elif path == "/api/tools/install":
-            name = body.get("tool", "")
-            if install_snapshot()["running"]:
-                self.send_json({"status": "busy", "message": "An install is already running."})
+            name = str(body.get("tool", ""))
+            with PIPELINE_LOCK:
+                busy = install_snapshot()["running"] or PIPELINE_STATE["running"]
+                if not busy:
+                    install_set(running=True, percent=0, message="Starting...", error="")
+            if busy:
+                self.send_json({"status": "busy", "message": "A recovery run or install is already running."}, status=409)
             else:
                 threading.Thread(target=run_install, args=(name,), daemon=True).start()
                 self.send_json({"status": "started", "tool": name})
@@ -251,6 +314,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
     def handle_inspect(self, body):
         pkg_path = body.get("path", "")
+        if not isinstance(pkg_path, str) or not pkg_path.strip():
+            raise ValueError("Choose a package first.")
         info = inspect_game(pkg_path)
         self.send_json(info)
 
@@ -262,25 +327,26 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         it wrote any files. The engine's log is piped into PIPELINE_STATE so the page can
         show which tool is working while the run is still going.
         """
-        src = body.get("source", "")
-        dest = body.get("destination", "")
+        src = str(body.get("source", "")).strip()
+        dest = resolve_work(body.get("destination", ""))
+        if not src or not os.path.isfile(src) and not os.path.isdir(src):
+            raise ValueError("The package file does not exist.")
         if os.path.isdir(src):
             self.send_json({"status": "error", "stages": [], "failed": [],
                             "message": "Folders are not supported. Choose an APK, XAPK or ZIP, "
                                        "or run Recover.ps1 on a Windows build folder."}, status=400)
             return
 
-        with PIPELINE_LOCK:
-            if PIPELINE_STATE["running"]:
-                self.send_json({"status": "busy", "message": "A recovery run is already in progress.",
-                                "stages": [], "failed": []}, status=409)
-                return
-            PIPELINE_STATE["running"] = True
+        if not acquire_run():
+            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress.",
+                            "stages": [], "failed": []}, status=409)
+            return
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
                      message="", results=[], log=[])
         try:
             info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
+            pipeline.claim_workspace(info)
 
             stages = [
                 ("Intake", pipeline.run_stage_0_intake, [pipeline.dir_00_original]),
@@ -294,16 +360,21 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             for name, run, folders in stages:
                 pipeline_set(stage=name, tool="")
                 before = pipeline.count_files(*folders)
+                started = time.time() - 1
                 try:
                     run(info)
                 except Exception as exc:
                     pipeline.record(name, False, f"{type(exc).__name__}: {exc}")
                     pipeline_set(results=list(pipeline.results))
                     continue
-                produced = pipeline.count_files(*folders) - before
+                after = pipeline.count_files(*folders)
+                produced = after - before
+                fresh = pipeline.newest_mtime(*folders) >= started
                 where = ", ".join(os.path.basename(f) for f in folders)
-                pipeline.record(name, produced > 0,
-                                f"{produced} file(s) written to {where}" if produced
+                ok = after > 0 and (produced > 0 or fresh)
+                pipeline.record(name, ok,
+                                (f"{produced} new file(s) in {where}" if produced > 0
+                                 else f"{after} file(s) refreshed in {where}") if ok
                                 else f"nothing written to {where}")
                 pipeline_set(results=list(pipeline.results))
 
@@ -318,7 +389,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             else:
                 message = "All stages produced output."
             status = "partial" if failed else "complete"
-            pipeline_set(running=False, stage="Finished", tool="", status=status, message=message)
+            pipeline_set(stage="Finished", tool="", status=status, message=message)
+            release_run()
             self.send_json({
                 "status": status,
                 "message": message,
@@ -327,41 +399,56 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             })
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
-            pipeline_set(running=False, stage="Failed", tool="", status="error", message=message)
+            pipeline_set(stage="Failed", tool="", status="error", message=message)
+            release_run()
             self.send_json({"status": "error", "message": message, "stages": [], "failed": []})
 
     def handle_pipeline_stage(self, body):
-        src = body.get("source", "")
-        dest = body.get("destination", "")
+        src = str(body.get("source", "")).strip()
+        dest = resolve_work(body.get("destination", ""))
         stage = body.get("stage", 1)
         if stage not in (1, 2, 3, 4):
-            self.send_json({"status": "error", "message": "stage must be 1-4"}, status=400)
+            raise ValueError("stage must be 1 to 4")
+        if not src or not os.path.isfile(src):
+            raise ValueError("The package file does not exist.")
+        if not acquire_run():
+            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
             return
-        with PIPELINE_LOCK:
-            if PIPELINE_STATE["running"]:
-                self.send_json({"status": "busy", "message": "A recovery run is already in progress."}, status=409)
-                return
-
-        info = inspect_game(src)
-        pipeline = RecoveryPipeline(src, dest)
-        pipeline.create_directories()
-
-        if stage == 1:
-            pipeline.run_stage_0_intake(info)
-            pipeline.run_stage_1_extract(info)
-        elif stage == 2:
-            pipeline.run_stage_2_assets(info)
-        elif stage == 3:
-            pipeline.run_stage_3_code_recovery(info)
-        elif stage == 4:
-            pipeline.run_stage_4_scaffold_project(info)
-            pipeline.generate_report(info)
-
-        self.send_json({"status": "success", "stage": stage})
+        try:
+            info = inspect_game(src)
+            pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
+            pipeline.create_directories()
+            pipeline.claim_workspace(info)
+            folders = {1: [pipeline.dir_00_original, pipeline.dir_01_extracted],
+                       2: [pipeline.dir_02_assetripper],
+                       3: [pipeline.dir_03_il2cpp, pipeline.dir_03_scripts, pipeline.dir_04_jadx],
+                       4: [pipeline.dir_05_project]}[stage]
+            before = pipeline.count_files(*folders)
+            started = time.time() - 1
+            if stage == 1:
+                pipeline.run_stage_0_intake(info)
+                pipeline.run_stage_1_extract(info)
+            elif stage == 2:
+                pipeline.run_stage_2_assets(info)
+            elif stage == 3:
+                pipeline.run_stage_3_code_recovery(info)
+            else:
+                pipeline.run_stage_4_scaffold_project(info)
+                pipeline.generate_report(info)
+            after = pipeline.count_files(*folders)
+            ok = after > 0 and (after > before or pipeline.newest_mtime(*folders) >= started)
+        finally:
+            release_run()
+        self.send_json({"status": "complete" if ok else "empty", "stage": stage,
+                        "message": "" if ok else "The stage wrote no files. Check the log."})
 
     def handle_scripts_scan(self, body):
-        work_folder = body.get("work_folder", "")
-        scripts_dir = os.path.join(work_folder, "03_scripts")
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
+        # AssetRipper's recovered C# is the real script set for Mono builds; 03_scripts holds
+        # the IL2CPP dump and web files.
+        scripts_dir = os.path.join(work_folder, "02_assetripper", "ExportedProject", "Assets", "Scripts")
+        if not os.path.isdir(scripts_dir) or not any(files for _r, _d, files in os.walk(scripts_dir)):
+            scripts_dir = os.path.join(work_folder, "03_scripts")
         if not os.path.exists(scripts_dir):
             scripts_dir = os.path.join(work_folder, "01_extracted")
 
@@ -370,15 +457,19 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_json(results)
 
     def handle_scripts_export(self, body):
-        work_folder = body.get("work_folder", "")
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
         scripts = body.get("scripts", [])
+        if not isinstance(scripts, list):
+            raise ValueError("scripts must be a list")
         target_dir = os.path.join(work_folder, "05_project", "Assets", "_Project", "Scripts")
 
-        root = os.path.realpath(work_folder)
+        root = work_folder
         items = []
         for s in scripts:
+            if not isinstance(s, dict):
+                continue
             source = os.path.realpath(str(s.get("path", "")))
-            if not source.startswith(root + os.sep) or not os.path.isfile(source):
+            if not _inside(source, root) or not os.path.isfile(source):
                 continue  # only files inside the work folder can be copied
             item = ScriptItem(source, work_folder)
             item.category = str(s.get("category", "Core Gameplay"))
@@ -386,13 +477,15 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             item.is_selected = True
             items.append(item)
 
-        exp, skp = export_selected_scripts(items, target_dir)
+        exp, skp = export_selected_scripts(items, target_dir, [AR_SCRIPTS(work_folder)])
         self.send_json({"status": "exported", "exported": exp, "skipped": skp, "target": target_dir})
 
     def handle_auto_playable_preset(self, body):
-        work_folder = body.get("work_folder", "")
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
         proj_dir = os.path.join(work_folder, "05_project")
-        scripts_dir = os.path.join(work_folder, "03_scripts")
+        scripts_dir = AR_SCRIPTS(work_folder)
+        if not os.path.isdir(scripts_dir) or not any(files for _r, _d, files in os.walk(scripts_dir)):
+            scripts_dir = os.path.join(work_folder, "03_scripts")
 
         # 1. Classify and auto-export gameplay only
         items = scan_and_classify_directory(scripts_dir)
@@ -406,14 +499,14 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             else:
                 item.is_selected = False
 
-        export_selected_scripts(gameplay_items, target_scripts_dir)
+        export_selected_scripts(gameplay_items, target_scripts_dir, [AR_SCRIPTS(work_folder)])
 
         # 2. Scaffold Unity project and generate missing SDK stubs
         res = scaffold_unity_project(proj_dir, body.get("unity_version", ""), "RecoveredGame")
         self.send_json({"status": "playable_ready", "results": res, "gameplay_scripts_exported": len(gameplay_items)})
 
     def handle_open_unity(self, body):
-        work_folder = body.get("work_folder", "")
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
         proj_dir = os.path.join(work_folder, "05_project")
 
         open_bat = os.path.join(work_folder, "Open_In_Unity.bat")
@@ -476,8 +569,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         work = qs.get("work_folder", [""])[0]
         real = os.path.realpath(f_path) if f_path else ""
         root = os.path.realpath(work) if work else ""
-        if not root or not real.startswith(root + os.sep) \
-                or os.path.splitext(real)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md"):
+        if not root or not real or not _inside(real, root) \
+                or os.path.splitext(real)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md", ".js", ".ts", ".java", ".html"):
             f_path = ""
         if f_path and os.path.isfile(f_path):
             try:

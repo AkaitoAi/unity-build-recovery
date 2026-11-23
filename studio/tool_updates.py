@@ -56,18 +56,21 @@ TOOLS = [
         "marker": os.path.join(TOOLS_ROOT, "jadx"),
         "role": "Decompiles Android DEX to Java",
         "newest_dir_prefix": "jadx",
+        "asset_pattern": r"^jadx-\d[^/]*\.zip$",  # the command-line build, not jadx-gui
     },
     {
         "name": "ILSpy", "repo": "icsharpcode/ILSpy",
         "marker": os.path.join(TOOLS_ROOT, "ILSpy", "ILSpy.exe"),
         "role": "Decompiles managed .NET assemblies",
         "newest_dir_prefix": "ilspy",
+        "no_install": True,
     },
     {
         "name": "Ghidra", "repo": "NationalSecurityAgency/ghidra",
         "marker": os.path.join(TOOLS_ROOT, "ghidra"),
         "role": "Disassembles and decompiles native binaries",
         "newest_dir_prefix": "ghidra",
+        "no_install": True,
     },
     {
         "name": "REA", "repo": "morluto/rea",
@@ -133,7 +136,7 @@ def _installed(tool):
     prefix = tool.get("newest_dir_prefix")
     if prefix:
         newest = None
-        for entry in os.listdir(TOOLS_ROOT):
+        for entry in (os.listdir(TOOLS_ROOT) if os.path.isdir(TOOLS_ROOT) else []):
             if entry.lower().startswith(prefix) and os.path.isdir(os.path.join(TOOLS_ROOT, entry)):
                 when = os.path.getmtime(os.path.join(TOOLS_ROOT, entry))
                 if newest is None or when > newest[0]:
@@ -171,7 +174,7 @@ def _newest_npm(package):
     }
 
 
-def _newest_release(repo):
+def _newest_release(repo, asset_pattern=None):
     """Newest published build including pre-releases, with its Windows download."""
     releases = _api(f"https://api.github.com/repos/{repo}/releases?per_page=20")
     if not releases:
@@ -192,7 +195,9 @@ def _newest_release(repo):
             points += 1
         return points
 
-    assets = [a for a in newest.get("assets", []) if score(a) > 0]
+    import re as _re
+    assets = [a for a in newest.get("assets", [])
+              if score(a) > 0 and (not asset_pattern or _re.match(asset_pattern, a.get("name", "")))]
     assets.sort(key=score, reverse=True)
     return {
         "tag": newest.get("tag_name") or "?",
@@ -235,7 +240,7 @@ def check_updates(force=False):
             latest = cached["release"]
         else:
             try:
-                latest = _newest_npm(tool["npm"]) if tool.get("npm") else _newest_release(tool["repo"])
+                latest = _newest_npm(tool["npm"]) if tool.get("npm") else _newest_release(tool["repo"], tool.get("asset_pattern"))
                 cache[tool["repo"]] = {"checked_at": now, "release": latest}
             except urllib.error.HTTPError as error:
                 if error.code in (403, 429) and cached:
@@ -283,7 +288,10 @@ def check_updates(force=False):
                 entry["state"] = "current"
                 entry["note"] += f"Installed build matches the newest release ({latest['tag']})."
             entry["can_install"] = (bool(latest.get("download")) or bool(tool.get("npm")))  and entry["state"] in ("update", "missing")
-            if entry["can_install"] and _fixed_location(tool) and entry["state"] == "update":
+            if tool.get("no_install"):
+                entry["can_install"] = False
+                entry["note"] += " Update this tool by hand; the studio reads it from a fixed folder."
+            elif entry["can_install"] and _fixed_location(tool) and entry["state"] == "update":
                 # The pipeline reads this tool from one fixed folder, so a side-by-side install
                 # would never be used. Replace the folder by hand.
                 entry["can_install"] = False
@@ -300,9 +308,10 @@ def check_updates(force=False):
 def _install_npm(tool, report):
     """Updates a tool that ships as an npm package, in its own folder."""
     import subprocess
+    import shutil
     folder = os.path.join(TOOLS_ROOT, "rea-runtime")
     node_dir = None
-    for entry in sorted(os.listdir(TOOLS_ROOT), reverse=True):
+    for entry in sorted(os.listdir(TOOLS_ROOT) if os.path.isdir(TOOLS_ROOT) else [], reverse=True):
         if entry.lower().startswith("node-"):
             for root, _dirs, files in os.walk(os.path.join(TOOLS_ROOT, entry)):
                 if "npm.cmd" in files:
@@ -310,13 +319,24 @@ def _install_npm(tool, report):
                     break
         if node_dir:
             break
-    npm = os.path.join(node_dir, "npm.cmd") if node_dir else "npm"
+    npm = os.path.join(node_dir, "npm.cmd") if node_dir else (shutil.which("npm") or "")
+    if not npm:
+        raise RuntimeError("npm was not found. Install Node.js or put it in a node-* folder under the tool root.")
+    os.makedirs(folder, exist_ok=True)
+    backup = {}
+    for name in ("package.json", "package-lock.json"):
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            backup[name] = open(path, "rb").read()
 
     report(10, f"Installing {tool['npm']} with npm (this can take a few minutes)...")
     result = subprocess.run(
         [npm, "install", f"{tool['npm']}@latest", "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
         cwd=folder, capture_output=True, text=True, errors="replace", timeout=2700)
     if result.returncode != 0:
+        for name, data in backup.items():  # keep the manifest of the working install
+            with open(os.path.join(folder, name), "wb") as handle:
+                handle.write(data)
         tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
         raise RuntimeError("npm failed: " + " | ".join(tail))
 
@@ -348,7 +368,7 @@ def install(name, progress=None):
         return _install_npm(tool, report)
 
     report(2, f"Looking up the newest {tool['name']}...")
-    latest = _newest_release(tool["repo"])
+    latest = _newest_release(tool["repo"], tool.get("asset_pattern"))
     url = latest.get("download")
     if not url:
         raise RuntimeError(f"{tool['name']} {latest['tag']} publishes no Windows download; "
@@ -389,22 +409,44 @@ def install(name, progress=None):
                 raise RuntimeError(f"{target} already has files; replace it by hand.")
         else:
             target = os.path.join(TOOLS_ROOT, f"{tool['name'].lower()}-{safe_tag}")
-        os.makedirs(target, exist_ok=True)
         import io
-        base = os.path.realpath(target)
-        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-            for member in archive.namelist():
-                if not os.path.realpath(os.path.join(base, member)).startswith(base + os.sep):
-                    raise RuntimeError(f"unsafe path in archive: {member}")
-            archive.extractall(target)
+        import shutil
+        partial = target + ".partial"
+        shutil.rmtree(partial, ignore_errors=True)
+        os.makedirs(partial)
+        try:
+            base = os.path.realpath(partial)
+            with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+                for member in archive.namelist():
+                    if not os.path.realpath(os.path.join(base, member)).startswith(base + os.sep):
+                        raise RuntimeError(f"unsafe path in archive: {member}")
+                archive.extractall(partial)
+            entries = os.listdir(partial)
+            if len(entries) == 1 and os.path.isdir(os.path.join(partial, entries[0])):
+                inner = os.path.join(partial, entries[0])  # release zips wrap everything in one folder
+                flat = partial + ".flat"
+                os.replace(inner, flat)
+                os.rmdir(partial)
+                partial = flat
+            marker = tool.get("marker", "")
+            if _fixed_location(tool) and marker and not os.path.exists(
+                    os.path.join(partial, os.path.basename(marker))):
+                raise RuntimeError(f"The download does not contain {os.path.basename(marker)}; nothing was installed.")
+            if os.path.isdir(target) and not os.listdir(target):
+                os.rmdir(target)
+            os.replace(partial, target)
+        except Exception:
+            shutil.rmtree(partial, ignore_errors=True)
+            shutil.rmtree(partial.replace(".flat", ""), ignore_errors=True)
+            raise
     else:
         folder = tool.get("newest_file_in") or os.path.dirname(tool["marker"]) or TOOLS_ROOT
-        if not os.path.isdir(folder):
-            folder = TOOLS_ROOT
         os.makedirs(folder, exist_ok=True)
         root, extension = os.path.splitext(latest["download_name"])
         target = os.path.join(folder, f"{tool['name']}-{safe_tag}{extension or '.exe'}")
-        open(target, "wb").write(blob)
+        with open(target + ".part", "wb") as handle:
+            handle.write(blob)
+        os.replace(target + ".part", target)
 
     cache = _load_cache()
     cache.pop(tool["repo"], None)

@@ -23,7 +23,7 @@ function Assert-SafeArchive([string]$Path, [long]$MaxBytes = 40GB, [int]$MaxEntr
         $total = 0L
         foreach ($entry in $archive.Entries) {
             $name = $entry.FullName
-            if ($name -match '(^|[\/])\.\.([\/]|$)' -or [IO.Path]::IsPathRooted($name) -or $name -match '^[A-Za-z]:') {
+            if ($name -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($name) -or $name -match '^[A-Za-z]:') {
                 throw "unsafe archive: entry path '$name' leaves the extraction folder."
             }
             $total += $entry.Length
