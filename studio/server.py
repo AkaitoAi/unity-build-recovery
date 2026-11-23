@@ -40,7 +40,8 @@ MAX_BODY_BYTES = 1_000_000
 # The run happens inside one long request, so without this the console stayed silent
 # until the whole thing had finished.
 # Progress of a tool install, so the page can show a bar while it downloads.
-INSTALL_STATE = {"running": False, "tool": "", "percent": 0, "message": "", "result": None, "error": ""}
+INSTALL_STATE = {"running": False, "tool": "", "percent": 0, "message": "", "result": None, "error": "",
+                 "started_at": 0.0, "finished_at": 0.0}
 INSTALL_LOCK = threading.Lock()
 
 
@@ -59,13 +60,15 @@ def run_install(name, approved=None):
     def progress(percent, message):
         install_set(percent=percent, message=message)
 
-    install_set(running=True, tool=name, percent=0, message="Starting...", result=None, error="")
+    install_set(running=True, tool=name, percent=0, message="Starting...", result=None, error="",
+                started_at=time.time(), finished_at=0.0)
     try:
         outcome = install(name, progress, approved)
         install_set(running=False, percent=100, message=outcome["tool"] + " " + outcome["version"] + " installed",
-                    result=outcome)
+                    result=outcome, finished_at=time.time())
     except Exception as exc:
-        install_set(running=False, percent=0, message="", error=f"{type(exc).__name__}: {exc}")
+        install_set(running=False, percent=0, message="", error=f"{type(exc).__name__}: {exc}",
+                    finished_at=time.time())
 
 PIPELINE_STATE = {
     "running": False,
@@ -75,6 +78,12 @@ PIPELINE_STATE = {
     "results": [],
     "status": "idle",
     "message": "",
+    "plan": [],            # names of the stages this run will go through, in order
+    "stage_index": 0,      # 1-based number of the stage running now
+    "stage_total": 0,
+    "started_at": 0.0,
+    "stage_started_at": 0.0,
+    "finished_at": 0.0,
 }
 PIPELINE_LOCK = threading.Lock()
 
@@ -184,7 +193,20 @@ def pipeline_snapshot(after: int = 0) -> dict:
             "results": list(PIPELINE_STATE["results"]),
             "log": PIPELINE_STATE["log"][start:],
             "log_total": total,
+            "plan": list(PIPELINE_STATE["plan"]),
+            "stage_index": PIPELINE_STATE["stage_index"],
+            "stage_total": PIPELINE_STATE["stage_total"],
+            "started_at": PIPELINE_STATE["started_at"],
+            "stage_started_at": PIPELINE_STATE["stage_started_at"],
+            "finished_at": PIPELINE_STATE["finished_at"],
+            "last_line": PIPELINE_STATE["log"][-1] if PIPELINE_STATE["log"] else "",
         }
+
+
+def activity_snapshot() -> dict:
+    """Everything that is running or just finished, in one answer for the page's activity bar."""
+    return {"now": time.time(), "pipeline": pipeline_snapshot(10 ** 9),
+            "install": install_snapshot(), "craft": craft.snapshot(10 ** 9)}
 
 class StudioRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -254,6 +276,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"tools": check_updates(force=query.get("force", ["0"])[0] == "1")})
             except Exception as exc:
                 self.send_json({"tools": [], "error": f"{type(exc).__name__}: {exc}"})
+        elif path == "/api/activity":
+            self.send_json(activity_snapshot())
         elif path == "/api/agents":
             self.send_json({"agents": agents.detect(), "rea": rea_support.status()})
         elif path == "/api/craft/agents":
@@ -334,7 +358,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             with PIPELINE_LOCK:
                 busy = install_snapshot()["running"] or PIPELINE_STATE["running"]
                 if not busy:
-                    install_set(running=True, percent=0, message="Starting...", error="")
+                    install_set(running=True, tool=name, percent=0, message="Starting...", error="",
+                                started_at=time.time(), finished_at=0.0)
             if busy:
                 self.send_json({"status": "busy", "message": "A recovery run or install is already running."}, status=409)
             else:
@@ -402,7 +427,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                             "stages": [], "failed": []}, status=409)
             return
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
-                     message="", results=[], log=[])
+                     message="", results=[], log=[], plan=[], stage_index=0, stage_total=0,
+                     started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
         try:
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.claim_workspace(info)
@@ -425,8 +451,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                     ("Rebuild Unity project", pipeline.run_stage_4_scaffold_project, [pipeline.dir_05_project]),
                 ]
 
-            for name, run, folders in stages:
-                pipeline_set(stage=name, tool="")
+            pipeline_set(plan=[name for name, _run, _folders in stages], stage_total=len(stages))
+            for position, (name, run, folders) in enumerate(stages, start=1):
+                pipeline_set(stage=name, tool="", stage_index=position, stage_started_at=time.time())
                 before = pipeline.count_files(*folders)
                 started = time.time() - 1
                 try:
@@ -459,7 +486,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             else:
                 message = "All stages produced output."
             status = "partial" if failed else "complete"
-            pipeline_set(stage="Finished", tool="", status=status, message=message)
+            pipeline_set(stage="Finished", tool="", status=status, message=message, finished_at=time.time())
             release_run()
             self.send_json({
                 "status": status,
@@ -469,7 +496,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             })
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
-            pipeline_set(stage="Failed", tool="", status="error", message=message)
+            pipeline_set(stage="Failed", tool="", status="error", message=message, finished_at=time.time())
             release_run()
             self.send_json({"status": "error", "message": message, "stages": [], "failed": []})
 
@@ -487,7 +514,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
             return
         try:
-            pipeline_set(running=True, stage=f"Stage {stage}", tool="", status="running", message="", results=[], log=[])
+            pipeline_set(running=True, stage=f"Stage {stage}", tool="", status="running", message="", results=[], log=[],
+                         plan=[f"Stage {stage}"], stage_index=1, stage_total=1,
+                         started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
             info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.create_directories()

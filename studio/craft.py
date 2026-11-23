@@ -26,7 +26,8 @@ MAX_TASK = 4000
 MAX_LOG_LINES = 5000
 RUN_TIMEOUT_SECONDS = 2 * 60 * 60
 
-STATE = {"running": False, "status": "idle", "message": "", "folder": "", "log": []}
+STATE = {"running": False, "status": "idle", "message": "", "folder": "", "log": [],
+         "started_at": 0.0, "finished_at": 0.0}
 STATE_LOCK = threading.Lock()
 _process = None
 _stop_requested = threading.Event()
@@ -36,7 +37,9 @@ def snapshot(after: int = 0) -> dict:
     with STATE_LOCK:
         lines = STATE["log"][after:]
         return {"running": STATE["running"], "status": STATE["status"], "message": STATE["message"],
-                "folder": STATE["folder"], "log": lines, "next": after + len(lines)}
+                "folder": STATE["folder"], "log": lines, "next": after + len(lines),
+                "started_at": STATE["started_at"], "finished_at": STATE["finished_at"],
+                "last_line": STATE["log"][-1] if STATE["log"] else ""}
 
 
 def is_running() -> bool:
@@ -227,7 +230,8 @@ def start(work_folder: str, task: str, backend: str, configured_cli: str, rounds
         args += ["--backend", backend]
 
     with STATE_LOCK:
-        STATE.update(running=True, status="running", message="", folder=draft, log=[])
+        STATE.update(running=True, status="running", message="", folder=draft, log=[],
+                     started_at=time.time(), finished_at=0.0)
     _log(f"Working copy: {draft}")
     _log(f"Agent: {backend or '(first available)'}")
     threading.Thread(target=_worker, args=(args, draft), daemon=True).start()
@@ -269,7 +273,7 @@ def _worker(args: list, cwd: str) -> None:
         except Exception:
             pass
         _process = None
-        _set(running=False, status=status, message=message)
+        _set(running=False, status=status, message=message, finished_at=time.time())
 
 
 def stop() -> bool:

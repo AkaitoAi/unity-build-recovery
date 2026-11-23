@@ -327,6 +327,37 @@
     }
 
     /* Progress bar */
+
+    /* ---- Activity bar: every running task, with progress and elapsed time ---- */
+    #activity-bar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; display: none; flex-direction: column; gap: 8px;
+      padding: 10px 18px; background: rgba(8, 12, 22, 0.97); border-top: 1px solid var(--border); font-size: 12px;
+    }
+    .act-row { display: flex; align-items: center; gap: 12px; }
+    .act-title { min-width: 210px; font-weight: 700; }
+    .act-bar { flex: 1; height: 8px; border-radius: 4px; background: rgba(255,255,255,0.09); overflow: hidden; }
+    .act-bar > div { height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); transition: width .4s; }
+    .act-bar.pulse > div { animation: actpulse 1.1s ease-in-out infinite alternate; }
+    .act-bar.sweep > div { width: 30% !important; animation: actsweep 1.3s ease-in-out infinite; }
+    @keyframes actpulse { from { opacity: .55; } to { opacity: 1; } }
+    @keyframes actsweep { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+    .act-text { flex: 2; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .act-time { min-width: 62px; text-align: right; color: var(--text-muted); }
+    .act-row.done .act-title { color: var(--accent-emerald); }
+    .act-row.failed .act-title { color: var(--accent-rose); }
+    .stage-stepper { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 13px; }
+    .stage-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 8px;
+                  background: var(--bg-card-inner); border: 1px solid transparent; }
+    .stage-item .mark { width: 18px; text-align: center; font-weight: 800; }
+    .stage-item.pending { color: var(--text-muted); }
+    .stage-item.running { border-color: var(--accent-cyan); }
+    .stage-item.running .mark { animation: actpulse 1s ease-in-out infinite alternate; color: var(--accent-cyan); }
+    .stage-item.ok .mark { color: var(--accent-emerald); }
+    .stage-item.failed .mark { color: var(--accent-rose); }
+    .stage-item .detail { color: var(--text-muted); font-size: 12px; margin-left: auto; text-align: right; }
+    body.has-activity { padding-bottom: 140px; }
+    body.has-activity main { padding-bottom: 20px; }
+
     .progress-track {
       width: 100%;
       height: 8px;
@@ -612,6 +643,7 @@
         <div class="progress-track">
           <div id="prog-fill" class="progress-fill"></div>
         </div>
+        <div id="stage-stepper" class="stage-stepper"></div>
       </div>
     </div>
 
@@ -781,6 +813,8 @@ Local recovery tools are listed on the Tools tab.
     </div>
   </main>
 
+  <div id="activity-bar"></div>
+
   <script>
     function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
     let scriptsData = [];
@@ -912,6 +946,85 @@ Local recovery tools are listed on the Tools tab.
       if (d.running) craftTimer = setTimeout(craftPoll, 1500);
     }
 
+    // ---- Activity bar and stage list: what is running, how far along, and for how long -----
+    function fmtTime(seconds) {
+      seconds = Math.max(0, Math.floor(seconds));
+      const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+      return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + s + 's';
+    }
+
+    function activityRow(kind, title, percent, text, elapsed) {
+      const bar = percent === null
+        ? '<div class="act-bar sweep"><div></div></div>'
+        : '<div class="act-bar' + (kind === 'run' ? ' pulse' : '') + '"><div style="width:' + Math.max(2, Math.min(100, percent)) + '%"></div></div>';
+      const cls = kind === 'done' ? ' done' : (kind === 'failed' ? ' failed' : '');
+      return '<div class="act-row' + cls + '"><div class="act-title">' + esc(title) + '</div>' + bar +
+             '<div class="act-text" title="' + esc(text) + '">' + esc(text) + '</div>' +
+             '<div class="act-time">' + esc(elapsed) + '</div></div>';
+    }
+
+    function renderStepper(p) {
+      const box = document.getElementById('stage-stepper');
+      if (!box) return;
+      if (!p.plan || !p.plan.length) { box.innerHTML = ''; return; }
+      box.innerHTML = p.plan.map(function (name, i) {
+        const result = (p.results || [])[i];
+        let state = 'pending', mark = '○', detail = 'waiting';
+        if (result) { state = result.ok ? 'ok' : 'failed'; mark = result.ok ? '✓' : '✗'; detail = result.detail || ''; }
+        else if (p.running && p.stage_index === i + 1) {
+          state = 'running'; mark = '◐';
+          detail = 'working, ' + fmtTime(p.now_stage_elapsed) + (p.tool ? ' · ' + p.tool : '');
+        }
+        return '<div class="stage-item ' + state + '"><span class="mark">' + mark + '</span><span>' + (i + 1) + ' of ' +
+               p.plan.length + ': ' + esc(name) + '</span><span class="detail">' + esc(detail) + '</span></div>';
+      }).join('');
+    }
+
+    async function pollActivity() {
+      let wait = 3000;
+      try {
+        const a = await (await fetch('/api/activity')).json();
+        const now = a.now, rows = [], recent = 15;
+        const p = a.pipeline, ins = a.install, cr = a.craft;
+        p.now_stage_elapsed = now - (p.stage_started_at || now);
+        renderStepper(p);
+        const fill = document.getElementById('prog-fill');
+        if (p.running && p.stage_total) {
+          const done = (p.results || []).length;
+          fill.style.width = Math.max(3, done / p.stage_total * 100) + '%';
+        } else if (!isPipelineRunning && p.stage_total && p.finished_at && now - p.finished_at < 60) {
+          fill.style.width = ((p.results || []).length / p.stage_total * 100) + '%';
+        }
+        if (p.running) {
+          const done = (p.results || []).length;
+          rows.push(activityRow('run', 'Recovery: ' + (p.stage || 'starting') + (p.stage_total ? '  (step ' + Math.max(1, p.stage_index) + ' of ' + p.stage_total + ')' : ''),
+            p.stage_total ? done / p.stage_total * 100 : null,
+            (p.tool ? p.tool + ': ' : '') + (p.last_line || 'working') + (p.stage_total ? '' : ''), fmtTime(now - p.started_at)));
+        } else if (p.finished_at && now - p.finished_at < recent) {
+          rows.push(activityRow(p.status === 'complete' ? 'done' : 'failed', 'Recovery ' + (p.status === 'complete' ? 'finished' : p.status),
+            100, p.message || '', fmtTime(p.finished_at - p.started_at)));
+        }
+        if (ins.running) {
+          rows.push(activityRow('run', 'Download / install: ' + (ins.tool || ''), ins.percent > 0 ? ins.percent : null,
+            ins.message || 'starting', fmtTime(now - ins.started_at)));
+        } else if (ins.finished_at && now - ins.finished_at < recent) {
+          rows.push(activityRow(ins.error ? 'failed' : 'done', (ins.error ? 'Install failed: ' : 'Installed: ') + (ins.tool || ''), 100,
+            ins.error || ins.message || '', fmtTime(ins.finished_at - ins.started_at)));
+        }
+        if (cr.running) {
+          rows.push(activityRow('run', 'Craft Anything (' + (cr.status || 'running') + ')', null, cr.last_line || 'working', fmtTime(now - cr.started_at)));
+        } else if (cr.finished_at && now - cr.finished_at < recent) {
+          rows.push(activityRow(cr.status === 'complete' ? 'done' : 'failed', 'Craft Anything ' + cr.status, 100, cr.message || '', fmtTime(cr.finished_at - cr.started_at)));
+        }
+        const bar = document.getElementById('activity-bar');
+        bar.innerHTML = rows.join('');
+        bar.style.display = rows.length ? 'flex' : 'none';
+        document.body.classList.toggle('has-activity', rows.length > 0);
+        wait = (p.running || ins.running || cr.running) ? 1000 : 2500;
+      } catch (e) { /* the studio may be restarting; try again shortly */ }
+      setTimeout(pollActivity, wait);
+    }
+
     // Logging helper
     function logMessage(msg) {
       const el = document.getElementById('console-log');
@@ -1008,7 +1121,7 @@ Local recovery tools are listed on the Tools tab.
 
       if (isPipelineRunning) return alert('Pipeline is already running!');
       isPipelineRunning = true;
-      document.getElementById('prog-fill').style.width = '20%';
+      document.getElementById('prog-fill').style.width = '3%';
 
       logMessage('==================================================');
       logMessage('🚀 RUNNING COMPLETE RECOVERY PIPELINE');
@@ -1037,7 +1150,6 @@ Local recovery tools are listed on the Tools tab.
         }
         stopPipelineWatch();
         setActiveTool('', '');
-        document.getElementById('prog-fill').style.width = '100%';
         // The server now reports what each stage actually produced, so say so rather than
         // announcing success regardless of the outcome.
         (out.stages || []).forEach(function (st) {
@@ -1056,7 +1168,6 @@ Local recovery tools are listed on the Tools tab.
         logMessage('[ERROR] ' + e);
       } finally {
         isPipelineRunning = false;
-        setTimeout(() => { document.getElementById('prog-fill').style.width = '0%'; }, 2000);
       }
     }
 
@@ -1401,6 +1512,7 @@ Local recovery tools are listed on the Tools tab.
     // Auto inspect on load
     window.addEventListener('DOMContentLoaded', () => {
       if (document.getElementById('input-source').value.trim()) setTimeout(quickInspect, 400);
+      pollActivity();
       loadToolsHealth();
     });
   </script>
