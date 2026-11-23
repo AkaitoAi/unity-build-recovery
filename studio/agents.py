@@ -181,6 +181,16 @@ Begin with the intake and give the user a short inventory before the heavy steps
 """
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Puts text on the Windows clipboard so the user can paste it into an agent panel."""
+    try:
+        subprocess.run(["clip"], input=text.encode("ascii"), timeout=10, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
 def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
     """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app)."""
     agent = _by_id.get(agent_id)
@@ -206,5 +216,6 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
             pasted = False  # flags for the rest are unknown here: open it empty, user pastes the line
         subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
                          stdin=None, stdout=None, stderr=None)
+    copied = _copy_to_clipboard(FIRST_MESSAGE) if pasted else False
     return {"agent": agent["name"], "task_file": task_path, "workspace": work_folder,
-            "paste_this": FIRST_MESSAGE if pasted else "", "started_at": time.time()}
+            "paste_this": FIRST_MESSAGE if pasted else "", "copied": copied, "started_at": time.time()}
