@@ -1,6 +1,14 @@
 .tools/
 recovery-output/
 __pycache__/
+*.pyc
 *.log
 update_cache.json
 *.before-*
+.venv/
+pyenv/
+rea-runtime/
+node_modules/
+.rea-mcp.json
+.idea/
+.vscode/

@@ -13,6 +13,7 @@ import os
 import re
 import json
 import time
+import threading
 import shutil
 import subprocess
 import datetime
@@ -20,22 +21,62 @@ from typing import Callable, Optional
 from scanner import inspect_game, TOOLS_ROOT, SEVEN_ZIP
 from unity_playable_scaffolder import scaffold_unity_project, setup_playable_web_runner, INSTALLED_EDITORS
 
-def run_tree(cmd, timeout):
-    """subprocess.run that, on a timeout, ends the whole process tree (a PowerShell script that
-    started AssetRipper would otherwise leave AssetRipper running), then raises TimeoutExpired."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
-                            stdin=subprocess.DEVNULL)
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+class RecoveryCancelled(Exception):
+    """The user pressed Cancel."""
+
+
+CANCEL = threading.Event()
+_LIVE = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def request_cancel() -> None:
+    """Stops the running recovery: no new stage starts, and every tool it started is ended."""
+    CANCEL.set()
+    with _LIVE_LOCK:
+        procs = list(_LIVE)
+    for proc in procs:
+        _kill_tree(proc)
+
+
+def _kill_tree(proc) -> None:
+    if proc.poll() is None:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
                        stdin=subprocess.DEVNULL)
+
+
+def _run(cmd, capture_output=True, text=None, errors=None, stdin=None, timeout=None, cwd=None, input=None):
+    """subprocess.run that can be cancelled, and that on a timeout ends the whole process tree
+    (a PowerShell script that started AssetRipper would otherwise leave AssetRipper running)."""
+    if CANCEL.is_set():
+        raise RecoveryCancelled()
+    if input is not None and stdin is None:
+        stdin = subprocess.PIPE
+    pipe = subprocess.PIPE if capture_output else None
+    proc = subprocess.Popen(cmd, stdout=pipe, stderr=pipe, stdin=stdin, text=text, errors=errors, cwd=cwd)
+    with _LIVE_LOCK:
+        _LIVE.add(proc)
+    try:
         try:
-            proc.communicate(timeout=10)
-        except Exception:
-            proc.kill()
-        raise
+            out, err = proc.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            try:
+                proc.communicate(timeout=10)
+            except Exception:
+                proc.kill()
+            raise
+    finally:
+        with _LIVE_LOCK:
+            _LIVE.discard(proc)
+    if CANCEL.is_set():
+        raise RecoveryCancelled()
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def run_tree(cmd, timeout):
+    """Runs a command with captured text output; see _run."""
+    return _run(cmd, text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 
 
 class RecoveryPipeline:
@@ -213,7 +254,7 @@ class RecoveryPipeline:
         cmd = [exe, "--headless", f"--recover={source}", f"--output={self.dir_05_project}"]
         self.log("Executing: " + " ".join(cmd))
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+            res = _run(cmd, capture_output=True, text=True, errors="replace",
                                  stdin=subprocess.DEVNULL, timeout=3600, cwd=self.work_folder)
         except subprocess.TimeoutExpired:
             self.log("  [GDRE] timed out after 60 minutes.")
@@ -239,7 +280,7 @@ class RecoveryPipeline:
             raise FileNotFoundError("Run the intake stage first: the original copy is missing.")
         cmd = [SEVEN_ZIP, "x", package, f"-o{self.dir_01_extracted}", "-y"]
         self.log(f"Executing: {' '.join(cmd)}")
-        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+        res = _run(cmd, capture_output=True, text=True, errors="replace",
                              stdin=subprocess.DEVNULL, timeout=3600)
         if res.returncode != 0:
             self.log(f"  7-Zip exited with code {res.returncode}: "
@@ -256,7 +297,7 @@ class RecoveryPipeline:
             out_sub = os.path.join(os.path.dirname(apk_path), "unpacked_" + os.path.splitext(os.path.basename(apk_path))[0])
             self.log(f"Unpacking nested APK: {os.path.basename(apk_path)} -> {out_sub}")
             sub_cmd = [SEVEN_ZIP, "x", apk_path, f"-o{out_sub}", "-y"]
-            sub_res = subprocess.run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
+            sub_res = _run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
             if sub_res.returncode != 0:
                 self.log(f"  7-Zip exited with code {sub_res.returncode} for {os.path.basename(apk_path)}")
 
@@ -358,7 +399,7 @@ class RecoveryPipeline:
         for name, cmd in attempts:
             self.log(f"Recovering type information with {name}...")
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                result = _run(cmd, capture_output=True, text=True, errors="replace",
                                         cwd=self.dir_03_il2cpp, timeout=2400, input="\n")
             except Exception as exc:
                 self.log(f"  {name} could not run: {exc}")
@@ -505,7 +546,7 @@ class RecoveryPipeline:
                    "--output-as", "isil",
                    "--output-to", out_dir]
             try:
-                subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                _run(cmd, capture_output=True, text=True, errors="replace",
                                cwd=self.dir_03_scripts, timeout=3600, input="\n")
             except Exception as exc:
                 self.log(f"  {exe} could not run: {exc}")
@@ -569,7 +610,7 @@ class RecoveryPipeline:
         target = apks[0]
         self.log(f"Decompiling {os.path.basename(target)} with {os.path.basename(os.path.dirname(os.path.dirname(jadx)))}...")
         try:
-            subprocess.run([jadx, "-d", self.dir_04_jadx, "--no-res", target],
+            _run([jadx, "-d", self.dir_04_jadx, "--no-res", target],
                            capture_output=True, text=True, errors="replace", timeout=3600)
         except Exception as exc:
             self.log(f"  JADX could not run: {exc}")
@@ -604,7 +645,7 @@ class RecoveryPipeline:
                     self.log(f"Running Il2CppDumper...")
                     cmd = [dumper_exe, so_path, metadata_path, self.dir_03_il2cpp]
                     # stdin is supplied because Il2CppDumper waits for a key press on exit.
-                    res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                    res = _run(cmd, capture_output=True, text=True, errors="replace",
                                          cwd=self.dir_03_il2cpp, input="\n", timeout=1800)
                     for line in res.stdout.splitlines()[:15]:
                         if line.strip():

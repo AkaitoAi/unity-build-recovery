@@ -20,7 +20,10 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from paths import TOOLS_ROOT, NONCE_PATH
+from paths import TOOLS_ROOT, NONCE_PATH, LOG_DIR, studio_version
+import logging
+import logging.handlers
+import recovery_engine
 import craft
 import agents
 import audit
@@ -32,6 +35,24 @@ from recovery_engine import RecoveryPipeline
 from unity_playable_scaffolder import scaffold_unity_project, INSTALLED_EDITORS
 from tool_updates import check_updates, install
 import tool_updates
+
+log = logging.getLogger("studio")
+
+
+def setup_logging() -> None:
+    """Rotating log file in the user's profile. Errors from every request end up here with a traceback."""
+    if log.handlers:
+        return
+    log.setLevel(logging.INFO)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(os.path.join(LOG_DIR, "studio.log"), maxBytes=1_000_000,
+                                                       backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        log.addHandler(handler)
+    except OSError:
+        log.addHandler(logging.NullHandler())
+
 
 PORT = 5899
 SESSION_TOKEN = secrets.token_urlsafe(24)       # sent with every API call by the page
@@ -269,6 +290,7 @@ def pipeline_log(message: str) -> None:
             if name in text:
                 PIPELINE_STATE["tool"] = "7-Zip" if name == "7z" else ("JADX" if name == "jadx" else name)
                 break
+    log.info(text)
     try:
         print(text)
     except UnicodeError:
@@ -323,8 +345,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, format, *args):
-        # Silent standard HTTP request logging to keep console clean
-        pass
+        log.debug("%s - %s", self.address_string(), format % args)
 
     def _request_allowed(self):
         """Blocks DNS rebinding (bad Host) and cross-site pages (foreign Origin)."""
@@ -396,6 +417,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"status": "error", "message": str(exc)}, status=400)
         except Exception as exc:
+            log.exception("GET %s failed", self.path.split("?")[0])
             try:
                 self.send_json({"status": "error", "message": f"{type(exc).__name__}: {exc}"}, status=500)
             except Exception:
@@ -424,6 +446,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.send_json(audit.load_latest(work) or {})
         elif path == "/api/activity":
             self.send_json(activity_snapshot())
+        elif path == "/api/version":
+            self.send_json({"version": studio_version(), "tools_root": TOOLS_ROOT, "log_dir": LOG_DIR,
+                            "app_dir": APP_DIR, "docs": "https://github.com/AkaitoAi/unity-build-recovery#readme"})
         elif path == "/api/agents":
             self.send_json({"agents": agents.detect(), "rea": rea_support.status()})
         elif path == "/api/craft/agents":
@@ -478,6 +503,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"status": "error", "message": str(exc), "stages": [], "failed": []}, status=400)
         except Exception as exc:
+            log.exception("POST %s failed", path)
             try:
                 self.send_json({"status": "error", "message": f"{type(exc).__name__}: {exc}",
                                 "stages": [], "failed": []}, status=500)
@@ -518,6 +544,13 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "started", "tool": name})
         elif path == "/api/agents/launch":
             self.handle_agent_launch(body)
+        elif path == "/api/pipeline/cancel":
+            self.handle_pipeline_cancel()
+        elif path == "/api/open-folder":
+            self.handle_open_folder(body)
+        elif path == "/api/open-tools-folder":
+            os.startfile(TOOLS_ROOT)
+            self.send_json({"opened": TOOLS_ROOT})
         elif path == "/api/agents/release":
             self.handle_agent_release(body)
         elif path == "/api/audit/run":
@@ -606,13 +639,21 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 ]
 
             pipeline_set(plan=[name for name, _run, _folders in stages], stage_total=len(stages))
+            recovery_engine.CANCEL.clear()
             for position, (name, run, folders) in enumerate(stages, start=1):
+                if recovery_engine.CANCEL.is_set():
+                    break
                 pipeline_set(stage=name, tool="", stage_index=position, stage_started_at=time.time())
                 before = pipeline.count_files(*folders)
                 started = time.time() - 1
                 try:
                     outcome = run(info)
+                except recovery_engine.RecoveryCancelled:
+                    pipeline.record(name, False, "cancelled")
+                    pipeline_set(results=list(pipeline.results))
+                    break
                 except Exception as exc:
+                    log.exception("Stage %s failed", name)
                     pipeline.record(name, False, f"{type(exc).__name__}: {exc}")
                     pipeline_set(results=list(pipeline.results))
                     continue
@@ -633,13 +674,17 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             pipeline.generate_report(info)
 
             failed = [r["stage"] for r in pipeline.results if not r["ok"]]
-            if failed:
+            cancelled = recovery_engine.CANCEL.is_set()
+            if cancelled:
+                failed = failed or ["cancelled"]
+                message = "Cancelled. Tools that were running were stopped; the folders hold what was written so far."
+            elif failed:
                 message = (f"{len(failed)} of {len(pipeline.results)} stages produced nothing: "
                            + ", ".join(failed)
                            + ". The rebuilt project is incomplete - see the recovery report.")
             else:
                 message = "All stages produced output."
-            status = "partial" if failed else "complete"
+            status = "cancelled" if cancelled else ("partial" if failed else "complete")
             pipeline_set(stage="Finished", tool="", status=status, message=message, finished_at=time.time())
             payload = {"status": status, "message": message, "stages": pipeline.results, "failed": failed}
         except Exception as exc:
@@ -690,6 +735,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.create_directories()
             pipeline.claim_workspace(info)
+            recovery_engine.CANCEL.clear()
             folders = {1: [pipeline.dir_00_original, pipeline.dir_01_extracted],
                        2: [pipeline.dir_02_assetripper],
                        3: [pipeline.dir_03_il2cpp, pipeline.dir_03_scripts, pipeline.dir_04_jadx],
@@ -712,13 +758,38 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             pipeline_set(stage="Finished", tool="", status="complete" if ok else "partial",
                          message=message or f"Stage {stage} finished.", finished_at=time.time())
             payload = {"status": "complete" if ok else "empty", "stage": stage, "message": message}
+        except recovery_engine.RecoveryCancelled:
+            pipeline_set(stage="Cancelled", tool="", status="cancelled", message="Cancelled.", finished_at=time.time())
+            payload = {"status": "cancelled", "stage": stage, "message": "Cancelled."}
         except Exception as exc:
+            log.exception("Stage %s failed", stage)
             pipeline_set(stage="Failed", tool="", status="error", message=f"{type(exc).__name__}: {exc}",
                          finished_at=time.time())
             raise
         finally:
             release_run(token)
         self.send_json(payload)
+
+    def handle_pipeline_cancel(self):
+        """Stops the running recovery or stage: ends the tools it started and runs no further stage."""
+        with PIPELINE_LOCK:
+            running = PIPELINE_STATE["running"] and PIPELINE_STATE["kind"] in ("recovery", "stage")
+        if running:
+            log.warning("Cancel requested by the user")
+            recovery_engine.request_cancel()
+        self.send_json({"cancelled": bool(running)})
+
+    def handle_open_folder(self, body):
+        """Shows the workspace (or one of its folders) in Explorer."""
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
+        sub = str(body.get("sub", ""))
+        if sub not in ("", "reports", "05_project", "06_playable"):
+            raise ValueError("Unknown folder.")
+        target = os.path.join(work_folder, sub) if sub else work_folder
+        if not os.path.isdir(target):
+            target = work_folder
+        os.startfile(target)
+        self.send_json({"opened": target})
 
     def handle_scripts_scan(self, body):
         work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
@@ -1022,6 +1093,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_json(out)
 
 def launch_studio(open_window=True):
+    setup_logging()
+    log.info("Aether Recon Studio %s starting on port %s", studio_version(), PORT)
     # Bind first: if another studio already holds the port this raises, and must not have replaced
     # that studio's launch nonce. Listen only after the new nonce is written, so a launcher that
     # sees the port open always reads the matching nonce.
