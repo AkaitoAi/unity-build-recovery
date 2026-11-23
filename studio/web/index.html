@@ -828,8 +828,20 @@ All 16 local recovery engines loaded and ready.
       const data = await res.json();
       const status = document.getElementById('agent-status');
       if (!res.ok) { status.innerText = ''; return alert(data.message || 'Could not start.'); }
-      status.innerText = data.agent + ' opened in a new window. Task file: ' + data.task_file +
+      status.innerText = data.agent + ' opened. Task file: ' + data.task_file +
         (data.paste_this ? '  Paste into the agent: ' + data.paste_this : '');
+      if (data.paste_this) {
+        alert(data.agent + ' is open, but it has not started yet.
+
+Open its agent or chat panel, ' +
+          (data.copied ? 'press Ctrl+V to paste the line that was copied for you, and send it.'
+                       : 'then type and send this line:
+
+' + data.paste_this) +
+          '
+
+The agent then reads AGENT_TASK.md in your workspace and starts the recovery.');
+      }
     }
 
     // ---- Craft Anything ----
