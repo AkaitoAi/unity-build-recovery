@@ -1022,9 +1022,13 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_json(out)
 
 def launch_studio(open_window=True):
+    # Bind first: if another studio already holds the port this raises, and must not have replaced
+    # that studio's launch nonce. Listen only after the new nonce is written, so a launcher that
+    # sees the port open always reads the matching nonce.
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), StudioRequestHandler, bind_and_activate=False)
+    server.server_bind()
     rotate_nonce()
-    # Start HTTP server
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), StudioRequestHandler)
+    server.server_activate()
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     print(f"[AETHER RECON] Server running at http://127.0.0.1:{PORT}")
