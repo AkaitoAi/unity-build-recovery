@@ -65,6 +65,15 @@ class RecoveryPipeline:
                         pass
         return newest
 
+    @staticmethod
+    def workspace_engine(work_folder: str) -> str:
+        """The engine recorded when the workspace was claimed ('' when unknown)."""
+        try:
+            with open(os.path.join(work_folder, ".run.json"), "r", encoding="utf-8") as handle:
+                return str(json.load(handle).get("engine", ""))
+        except Exception:
+            return ""
+
     def claim_workspace(self, info: dict) -> None:
         """Refuses to mix two different games in one work folder.
 
@@ -79,13 +88,14 @@ class RecoveryPipeline:
                 with open(marker, "r", encoding="utf-8") as handle:
                     previous = json.load(handle).get("sha256", "")
             except Exception:
-                previous = ""
+                raise ValueError("The workspace marker (.run.json) is unreadable. Choose a new folder "
+                                 "or delete the marker if you know the folder belongs to this game.")
             if previous and sha and previous != sha:
                 raise ValueError("This work folder already holds a different package. "
                                  "Choose an empty folder for each game.")
             return
         with open(marker, "w", encoding="utf-8") as handle:
-            json.dump({"sha256": sha, "name": info.get("name", "")}, handle)
+            json.dump({"sha256": sha, "name": info.get("name", ""), "engine": info.get("engine", "")}, handle)
 
     def record(self, stage: str, ok: bool, detail: str = "") -> bool:
         """Records the real outcome of a stage and says so in the console."""
@@ -123,6 +133,43 @@ class RecoveryPipeline:
         self.log(f"Size: {info.get('size_mb')} MB")
         return True
 
+    def _godot_inner_package(self, container: str) -> str:
+        """Pulls the Godot data out of an XAPK or ZIP: GDRE reads a PCK, EXE or APK, not a container.
+
+        Prefers a .pck, then an APK that holds a .pck or libgodot, then the largest APK. Files are
+        written under their base name only, so nothing can land outside 01_extracted.
+        """
+        import zipfile
+        os.makedirs(self.dir_01_extracted, exist_ok=True)
+        with zipfile.ZipFile(container) as archive:
+            members = [m for m in archive.infolist() if not m.is_dir()]
+            pcks = [m for m in members if m.filename.lower().endswith(".pck")]
+            apks = [m for m in members if m.filename.lower().endswith(".apk")]
+            chosen = max(pcks, key=lambda m: m.file_size) if pcks else None
+            if chosen is None and apks:
+                godot_apks = []
+                for apk in apks:
+                    try:
+                        with archive.open(apk) as raw:
+                            import io
+                            inner = zipfile.ZipFile(io.BytesIO(raw.read(min(apk.file_size, 2 * 1024 ** 3))))
+                            names = [n.lower() for n in inner.namelist()]
+                            if any(n.endswith(".pck") or "libgodot" in n for n in names):
+                                godot_apks.append(apk)
+                    except Exception:
+                        continue
+                pool = godot_apks or apks
+                chosen = max(pool, key=lambda m: m.file_size)
+            if chosen is None:
+                raise FileNotFoundError("The container holds no .pck or .apk for GDRE Tools to read.")
+            if chosen.file_size > 8 * 1024 ** 3:
+                raise ValueError("The Godot data inside the container is larger than 8 GB; not unpacking it.")
+            target = os.path.join(self.dir_01_extracted, os.path.basename(chosen.filename))
+            self.log(f"Unpacking {chosen.filename} from the container for GDRE Tools")
+            with archive.open(chosen) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        return target
+
     def run_stage_godot_recover(self, info: dict) -> bool:
         """Recovers a Godot project from a PCK, EXE or APK with GDRE Tools into 05_project."""
         self.log("--- [GODOT] Project recovery with GDRE Tools ---")
@@ -132,6 +179,8 @@ class RecoveryPipeline:
         source = os.path.join(self.dir_00_original, os.path.basename(self.input_file))
         if not os.path.exists(source):
             raise FileNotFoundError("Run the intake stage first: the original copy is missing.")
+        if source.lower().endswith((".xapk", ".zip", ".apks")):
+            source = self._godot_inner_package(source)
         cmd = [exe, "--headless", f"--recover={source}", f"--output={self.dir_05_project}"]
         self.log("Executing: " + " ".join(cmd))
         try:
@@ -164,17 +213,20 @@ class RecoveryPipeline:
             self.log(f"  7-Zip exited with code {res.returncode}: "
                      f"{(res.stderr or res.stdout or '').strip()[:200]}")
 
-        # If XAPK or split APKs, unpack inner APKs as well
+        # If XAPK or split APKs, unpack the APKs inside it (one level only: the list is taken
+        # before unpacking, so an APK hidden inside an APK cannot trigger endless unpacking).
+        nested = []
         for root, dirs, files in os.walk(self.dir_01_extracted):
             for f in files:
-                if f.endswith(".apk") and not f.startswith("extracted_"):
-                    apk_path = os.path.join(root, f)
-                    out_sub = os.path.join(root, "unpacked_" + os.path.splitext(f)[0])
-                    self.log(f"Unpacking nested APK: {f} -> {out_sub}")
-                    sub_cmd = [SEVEN_ZIP, "x", apk_path, f"-o{out_sub}", "-y"]
-                    sub_res = subprocess.run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
-                    if sub_res.returncode != 0:
-                        self.log(f"  7-Zip exited with code {sub_res.returncode} for {f}")
+                if f.lower().endswith(".apk") and not f.startswith("extracted_"):
+                    nested.append(os.path.join(root, f))
+        for apk_path in nested[:40]:
+            out_sub = os.path.join(os.path.dirname(apk_path), "unpacked_" + os.path.splitext(os.path.basename(apk_path))[0])
+            self.log(f"Unpacking nested APK: {os.path.basename(apk_path)} -> {out_sub}")
+            sub_cmd = [SEVEN_ZIP, "x", apk_path, f"-o{out_sub}", "-y"]
+            sub_res = subprocess.run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
+            if sub_res.returncode != 0:
+                self.log(f"  7-Zip exited with code {sub_res.returncode} for {os.path.basename(apk_path)}")
 
         if res.returncode == 0:
             now = time.time()  # a re-run over identical files still counts as a fresh extraction
@@ -702,15 +754,22 @@ class RecoveryPipeline:
             lines.append("")
         lines.append("## Folders")
         lines.append("")
-        for folder, what in (
-            (self.dir_00_original, "pristine copy of the source archive"),
-            (self.dir_01_extracted, "unpacked container files"),
-            (self.dir_02_assetripper, "ripped assets and materials"),
-            (self.dir_03_il2cpp, "IL2CPP dump output"),
-            (self.dir_03_scripts, "recovered scripts"),
-            (self.dir_04_jadx, "Java/DEX decompilation"),
-            (self.dir_05_project, "generated Unity project"),
-        ):
+        if info.get("engine") == "Godot":
+            folder_list = (
+                (self.dir_00_original, "pristine copy of the source package"),
+                (self.dir_05_project, "recovered Godot project (open it with the Godot version named in the log)"),
+            )
+        else:
+            folder_list = (
+                (self.dir_00_original, "pristine copy of the source archive"),
+                (self.dir_01_extracted, "unpacked container files"),
+                (self.dir_02_assetripper, "ripped assets and materials"),
+                (self.dir_03_il2cpp, "IL2CPP dump output"),
+                (self.dir_03_scripts, "recovered scripts"),
+                (self.dir_04_jadx, "Java/DEX decompilation"),
+                (self.dir_05_project, "generated Unity project"),
+            )
+        for folder, what in folder_list:
             count = self.count_files(folder)
             state = f"{count} file(s)" if count else "EMPTY"
             lines.append(f"- `{os.path.basename(folder)}/` - {what}: {state}")

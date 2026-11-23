@@ -29,6 +29,7 @@ RUN_TIMEOUT_SECONDS = 2 * 60 * 60
 STATE = {"running": False, "status": "idle", "message": "", "folder": "", "log": []}
 STATE_LOCK = threading.Lock()
 _process = None
+_stop_requested = threading.Event()
 
 
 def snapshot(after: int = 0) -> dict:
@@ -59,6 +60,9 @@ def find_cli(configured: str = ""):
     """Full path of the Craft Anything CLI, or None. A configured value may be a path or a name."""
     configured = (configured or "").strip().strip('"')
     if configured:
+        # Only Craft Anything's own program may be started from the page, never an arbitrary file.
+        if not os.path.basename(configured).lower().startswith(CLI_NAME):
+            return None
         return configured if os.path.isfile(configured) else shutil.which(configured)
     candidates = [
         shutil.which(CLI_NAME),
@@ -143,12 +147,20 @@ def doctor(configured_cli: str = "") -> dict:
 
 def _copy_project(project: str, draft: str) -> None:
     """Copies Assets, Packages and ProjectSettings, leaving out links so nothing outside is read."""
+    def is_link(path):
+        if os.path.islink(path):
+            return True
+        try:  # a Windows junction is not a symlink but carries the reparse-point flag
+            return bool(os.lstat(path).st_file_attributes & 0x400)
+        except (AttributeError, OSError):
+            return False
+
     def skip_links(directory, names):
-        return [n for n in names if os.path.islink(os.path.join(directory, n))]
+        return [n for n in names if is_link(os.path.join(directory, n))]
 
     for name in ("Assets", "Packages", "ProjectSettings"):
         source = os.path.join(project, name)
-        if os.path.isdir(source) and not os.path.islink(source):
+        if os.path.isdir(source) and not skip_links(project, [name]):
             shutil.copytree(source, os.path.join(draft, name), ignore=skip_links)
 
 
@@ -187,14 +199,27 @@ def start(work_folder: str, task: str, backend: str, configured_cli: str, rounds
                              "Remove those characters from the task.")
 
     project = os.path.join(work_folder, "05_project")
+    try:
+        with open(os.path.join(work_folder, ".run.json"), "r", encoding="utf-8") as handle:
+            if json.load(handle).get("engine") == "Godot":
+                raise ValueError("This is a Godot workspace; Craft Anything here works on Unity projects only.")
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and "Godot" in str(exc):
+            raise
     if os.path.islink(project) or not os.path.isdir(os.path.join(project, "Assets")) \
             or not os.path.isfile(os.path.join(project, "ProjectSettings", "ProjectVersion.txt")):
-        raise ValueError("The workspace has no rebuilt Unity project yet (05_project). Run recovery first.")
+        raise ValueError("05_project has no Assets folder or ProjectSettings\\ProjectVersion.txt. Run the "
+                         "recovery first; on a PC with no matching Unity editor the scaffold does not write "
+                         "ProjectVersion.txt, so copy one in if the project came from another tool.")
 
+    _stop_requested.clear()
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     draft = os.path.join(work_folder, f"craft-unity-{stamp}")
     os.makedirs(draft)
     _copy_project(project, draft)
+    if _stop_requested.is_set():
+        shutil.rmtree(draft, ignore_errors=True)
+        raise ValueError("Stopped before it started.")
 
     args = [cli, "rebuild", "-", prompt, "--project-folder", draft, "--existing", "edit",
             "--rounds", str(rounds), "--unattended"]
@@ -209,38 +234,49 @@ def start(work_folder: str, task: str, backend: str, configured_cli: str, rounds
     return draft
 
 
+def _kill(proc) -> None:
+    """Ends one process and anything it started."""
+    if proc is not None and proc.poll() is None:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, stdin=subprocess.DEVNULL)
+
+
 def _worker(args: list, cwd: str) -> None:
     global _process
+    timer = None
     status, message = "complete", "Craft Anything finished. Review the working copy in Unity before using it."
     try:
-        _process = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, text=True, errors="replace")
+        proc = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, errors="replace")
+        _process = proc
         deadline = time.time() + RUN_TIMEOUT_SECONDS
-        timer = threading.Timer(RUN_TIMEOUT_SECONDS, stop)
+        timer = threading.Timer(RUN_TIMEOUT_SECONDS, lambda: _kill(proc))
         timer.daemon = True
         timer.start()
-        for line in _process.stdout:
+        for line in proc.stdout:
             _log(line)
             if time.time() > deadline:
                 break
-        code = _process.wait()
-        timer.cancel()
-        if STATE["status"] == "stopping":
+        code = proc.wait()
+        if _stop_requested.is_set():
             status, message = "stopped", "Stopped. The working copy may be incomplete."
         elif code != 0:
             status, message = "failed", f"Craft Anything exited with code {code}. The working copy is kept for review."
     except Exception as exc:
         status, message = "failed", f"{type(exc).__name__}: {exc}"
     finally:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
         _process = None
         _set(running=False, status=status, message=message)
 
 
 def stop() -> bool:
-    """Ends the run, including any agent process it started."""
-    proc = _process
-    if proc is None or proc.poll() is not None:
+    """Asks the run to stop: works while the copy is still going, and ends the agent afterwards."""
+    if not is_running():
         return False
+    _stop_requested.set()
     _set(status="stopping")
-    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, stdin=subprocess.DEVNULL)
+    _kill(_process)
     return True

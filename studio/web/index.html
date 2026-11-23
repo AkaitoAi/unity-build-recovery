@@ -944,14 +944,15 @@ Local recovery tools are listed on the Tools tab.
         '\n    from ' + t.url + (t.sha256 ? '\n    SHA-256 ' + t.sha256 : '');
     }
 
-    function installAndWait(name) {
+    function installAndWait(name, version, sha256) {
       return new Promise(async (resolve) => {
         try {
           const res = await fetch('/api/tools/install', {
-            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tool: name })
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ tool: name, version: version, sha256: sha256 })
           });
           const started = await res.json();
-          if (started.status === 'busy') { logMessage(name + ': ' + started.message); return resolve(false); }
+          if (started.status === 'busy' || started.status === 'error') { logMessage(name + ': ' + started.message); return resolve(false); }
         } catch (e) { logMessage('[ERROR] ' + name + ': ' + e); return resolve(false); }
         const poll = setInterval(async () => {
           try {
@@ -971,9 +972,12 @@ Local recovery tools are listed on the Tools tab.
       const tools = out.tools || [];
       const byHand = tools.filter(t => t.manual || !t.can_install);
       if (byHand.length) {
+        const downloadable = tools.filter(t => !byHand.includes(t));
         alert('This ' + out.engine + ' game needs tools the studio cannot download for you:\n\n' +
           byHand.map(t => '- ' + t.name + ': ' + (t.note || '') + (t.release_url || t.url ? '\n    ' + (t.release_url || t.url) : '')).join('\n') +
-          '\n\nInstall them, then run the recovery again.');
+          (downloadable.length ? '\n\nIt also needs (the studio can download these after you install the ones above):\n' +
+            downloadable.map(t => '- ' + t.name + ' ' + (t.version || '')).join('\n') : '') +
+          '\n\nInstall the first group, then run the recovery again.');
         return false;
       }
       const ok = confirm('This ' + out.engine + ' game needs tools that are not installed yet:\n\n' +
@@ -981,7 +985,7 @@ Local recovery tools are listed on the Tools tab.
         '\n\nThe studio will download these files from the addresses above, check each against the SHA-256 shown, ' +
         'and install them in your tools folder. Download now?');
       if (!ok) return false;
-      for (const t of tools) { if (!(await installAndWait(t.name))) return false; }
+      for (const t of tools) { if (!(await installAndWait(t.name, t.version, t.sha256))) return false; }
       return true;
     }
 
@@ -1029,7 +1033,7 @@ Local recovery tools are listed on the Tools tab.
         });
         if (out.status === 'complete') {
           logMessage('✅ Pipeline finished: every stage produced output.');
-          alert('Recovery pipeline complete.\n\n' + (out.message || '') + '\n\nProject at:\n' + dest);
+          alert('Recovery pipeline complete.\n\n' + (out.message || '') + '\n\nProject at:\n' + dest + '\\05_project');
         } else {
           logMessage('⚠ Pipeline finished with problems: ' + (out.message || 'some stages produced nothing.'));
           alert('Recovery pipeline did NOT fully succeed.\n\n' + (out.message || '')
@@ -1074,7 +1078,8 @@ Local recovery tools are listed on the Tools tab.
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ work_folder: dest })
         });
-        scriptsData = await res.json();
+        const scanned = res.ok ? await res.json() : [];
+        scriptsData = Array.isArray(scanned) ? scanned : [];
         renderScriptTable();
         logMessage(`✓ AI Classifier processed ${scriptsData.length} scripts.`);
       } catch (e) {
@@ -1248,6 +1253,8 @@ Local recovery tools are listed on the Tools tab.
     const UPDATE_LABELS = { update: 'UPDATE AVAILABLE', current: 'UP TO DATE', offline: 'NO CONNECTION',
                             ratelimited: 'LIMIT REACHED', missing: 'NOT INSTALLED', unknown: 'UNKNOWN' };
 
+    let toolOffers = {};
+
     async function checkToolUpdates(force) {
       const box = document.getElementById('tool-updates-container');
       if (!box) return;
@@ -1256,6 +1263,8 @@ Local recovery tools are listed on the Tools tab.
         const res = await fetch('/api/tools/updates' + (force ? '?force=1' : ''));
         const data = await res.json();
         const tools = data.tools || [];
+        toolOffers = {};
+        tools.forEach(function (t) { toolOffers[t.name] = t; });
         if (!tools.length) {
           box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Could not check: ' + esc(data.error || 'no result') + '</div>';
           return;
@@ -1294,6 +1303,13 @@ Local recovery tools are listed on the Tools tab.
     }
 
     async function installTool(name) {
+      const offer = toolOffers[name];
+      if (!offer || !offer.latest) { alert('Check for updates first.'); return; }
+      const detail = offer.sha256
+        ? '\nFrom: ' + (offer.download || offer.url) + '\nSize: ' + (offer.size_mb || '?') + ' MB\nSHA-256: ' + offer.sha256
+        : '\nFrom npm. The exact version will be installed; npm checks its own integrity data.';
+      if (!confirm('Install ' + offer.name + ' ' + offer.latest + '?' + detail +
+          '\n\nThe studio downloads exactly this version and refuses to install anything else.')) return;
       const bar = document.getElementById('bar-' + name);
       const fill = document.getElementById('fill-' + name);
       const msg = document.getElementById('msg-' + name);
@@ -1303,10 +1319,10 @@ Local recovery tools are listed on the Tools tab.
       try {
         const res = await fetch('/api/tools/install', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ tool: name })
+          body: JSON.stringify({ tool: name, version: offer.latest, sha256: offer.sha256 || '' })
         });
         const started = await res.json();
-        if (started.status === 'busy') { if (msg) msg.innerText = started.message; return; }
+        if (started.status === 'busy' || started.status === 'error') { if (msg) msg.innerText = started.message; return; }
       } catch (e) {
         if (msg) msg.innerText = 'Could not start: ' + e;
         return;

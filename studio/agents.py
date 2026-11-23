@@ -79,13 +79,22 @@ def _find_desktop(agent: dict) -> str:
     if agent.get("appx") and not _appx_installed(agent["appx"]):
         return ""
     for name in agent["exes"]:
-        found = shutil.which(name)
+        found = _which(name)
         if found:
             return found
     for path in agent["paths"]:
         if os.path.isfile(path):
             return path
     return ""
+
+
+def _which(name: str):
+    """Looks a program up on PATH only. Windows also searches the current folder first, which
+    would let a file named claude.exe in the studio's folder be started instead of the real agent."""
+    here = os.path.normcase(os.path.abspath(os.getcwd()))
+    entries = [p for p in os.environ.get("PATH", "").split(os.pathsep)
+               if p and os.path.normcase(os.path.abspath(p)) != here]
+    return shutil.which(name, path=os.pathsep.join(entries))
 
 
 def _version(path: str) -> str:
@@ -101,7 +110,7 @@ def _version(path: str) -> str:
 def detect() -> list:
     """Every known agent, marked installed or not. The page lists installed ones first."""
     from concurrent.futures import ThreadPoolExecutor
-    paths = {a["id"]: shutil.which(a["exe"]) for a in KNOWN_AGENTS}
+    paths = {a["id"]: _which(a["exe"]) for a in KNOWN_AGENTS}
     with ThreadPoolExecutor(max_workers=len(KNOWN_AGENTS) + len(DESKTOP_AGENTS)) as pool:
         desktop_paths = {a["id"]: pool.submit(_find_desktop, a) for a in DESKTOP_AGENTS}
         versions = {aid: pool.submit(_version, p) for aid, p in paths.items() if p}
@@ -143,13 +152,23 @@ def _copy_to_clipboard(text: str) -> bool:
         return False
 
 
+def check_agent(agent_id: str) -> None:
+    """Raises ValueError unless this is a known agent that is installed."""
+    agent = _by_id.get(agent_id)
+    if not agent:
+        raise ValueError("Unknown agent.")
+    path = _find_desktop(agent) if agent.get("kind") == "desktop" else _which(agent["exe"])
+    if not path:
+        raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
+
+
 def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
     """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app)."""
     agent = _by_id.get(agent_id)
     if not agent:
         raise ValueError("Unknown agent.")
     desktop = agent.get("kind") == "desktop"
-    path = _find_desktop(agent) if desktop else shutil.which(agent["exe"])
+    path = _find_desktop(agent) if desktop else _which(agent["exe"])
     if not path:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
     os.makedirs(work_folder, exist_ok=True)

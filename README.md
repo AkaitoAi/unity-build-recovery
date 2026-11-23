@@ -7,8 +7,8 @@ This repository has two parts:
 | | Aether Recon Studio (`studio/`) | PowerShell CLI (`Recover.ps1`) |
 | --- | --- | --- |
 | What it is | A local desktop-window UI | A batch command line |
-| Inputs | APK, XAPK, ZIP | Windows build folders, APK, XAPK, OBB, ZIP, loose Unity assets |
-| Tools | You install them (see [Tool folders](#tool-folders)) | Downloads and checksums them into `.tools` |
+| Inputs | APK, XAPK, ZIP; Godot also PCK and EXE | Windows build folders, APK, XAPK, OBB, ZIP, loose Unity assets |
+| Tools | Several you install by hand; AssetRipper, Cpp2IL and GDRE Tools it can download after you approve (see [Tool folders](#tool-folders)) | Downloads and checksums them into `.tools` |
 | Output | A work folder per game, a Markdown report, a Unity project folder | A `run-…` folder with `recovery-report.json` |
 | Pick it when | You want to inspect, pick scripts and rebuild a project step by step | You want an unattended run, a Windows build folder, or several inputs at once |
 
@@ -34,14 +34,14 @@ The two do not share code, tool folders or report formats. The earlier CLI-only 
 
 Other engines are not recovered yet. The studio detects Godot by a `.pck` file, `libgodot` or an embedded `GDPC` footer. An encrypted Godot game needs its encryption key, and the studio does not take a key yet, so it reports the failure and stops.
 
-**Missing tools.** The studio never downloads anything on its own. If a game needs a tool that is not installed, the recovery stops before it creates anything and shows the tool, version, size, download address and SHA-256. Press OK to let the studio download it, check the SHA-256 and install it; press Cancel and nothing is downloaded. Tools whose release publishes no SHA-256 (for example Il2CppDumper) are not downloaded; you install them by hand. 7-Zip is always installed by hand.
+**Missing tools.** The studio never downloads anything on its own. A Unity IL2CPP game needs either Il2CppDumper or Cpp2IL. If a game needs a tool that is not installed, the recovery stops before it creates anything and shows the tool, version, size, download address and SHA-256. Press OK to let the studio download exactly that version, check the SHA-256 and install it (if a newer release appears before the install starts, the install is refused and you are asked again); press Cancel and nothing is downloaded. Tools whose release publishes no SHA-256 (for example Il2CppDumper) are not downloaded; you install them by hand. 7-Zip is always installed by hand.
 
 A Python UI that scans an APK, XAPK or ZIP, unpacks it, runs the recovery tools in order, lets you pick which recovered scripts to keep, and builds a Unity project folder. Folders are not supported: for a Windows build folder use `Recover.ps1`.
 
 ### Requirements
 
 - Windows x64.
-- Python 3.10 or later with Tk (the python.org installer includes it). No pip packages are needed. The launcher uses `pyenv\Scripts\pythonw.exe` beside the tool root if present, then `pythonw` on PATH, then the `pyw` launcher.
+- Python 3.10 or later with Tk (the python.org installer includes it). No pip packages are needed. The launcher uses `pyenv\Scripts\pythonw.exe` in the folder above `studio\` if present, then `pythonw` on PATH, then the `pyw` launcher.
 - Microsoft Edge or Google Chrome. The UI opens in an app-style window of whichever is installed.
 - The recovery tools, in the folders listed below.
 
@@ -51,14 +51,14 @@ The studio finds its tools in this order: the `RE_TOOLS` environment variable, t
 
 | Folder | Tool | Needed for |
 | --- | --- | --- |
-| `7-Zip\7z.exe` | 7-Zip | Unpacking (required) |
+| `7-Zip\7z.exe` (copy the whole 7-Zip folder: `7z.dll` must sit beside it) | 7-Zip | Unpacking Unity packages (required, installed by hand) |
 | `AssetRipper\AssetRipper.GUI.Free.exe` | AssetRipper 2.x | Assets, scenes, materials |
 | `Il2CppDumper\` | Il2CppDumper | IL2CPP type layout |
 | `Cpp2IL\` | Cpp2IL | IL2CPP fallback and ARM64 dumps |
 | `jadx\bin\jadx.bat` | JADX, plus a JDK 21 or later under `C:\Program Files\Eclipse Adoptium` | Java source from Android DEX |
 | `ghidra\`, `android-sdk\ndk\<version>` | Ghidra, Android NDK | Symbol import (optional) |
 
-The Tools tab shows PASS or FAIL for each folder. The CLI's `.tools` folder uses versioned names such as `AssetRipper-2.0.0`, which the studio does not look for. To use the CLI's tools anyway, point `RE_TOOLS` at a folder that has the plain names above. Ghidra and ILSpy cannot be updated from the Tools tab; replace their folders by hand.
+The Tools tab shows PASS or FAIL for these folders and for a few optional extras (AssetStudioMod, ffmpeg, llvm, a Python environment, .NET, Mono.Cecil, the Android SDK), which show FAIL on a normal install. The CLI's `.tools` folder uses versioned names such as `AssetRipper-2.0.0`, which the studio does not look for. To use the CLI's tools anyway, point `RE_TOOLS` at a folder that has the plain names above. Ghidra and ILSpy cannot be updated from the Tools tab; replace their folders by hand.
 
 `studio\env.ps1` is optional. Dot-source it in your own PowerShell session if you want these tools on PATH. The launcher does not use it.
 
@@ -122,7 +122,7 @@ Set-Location .\unity-build-recovery
 
 To update an existing clone, run `git pull --ff-only`.
 
-If PowerShell blocks the script, start it with `powershell -ExecutionPolicy Bypass -File .\Recover.ps1 …` or unblock it with `Unblock-File`.
+If PowerShell blocks the script, start it with `powershell -ExecutionPolicy Bypass -File .\Recover.ps1 …` or unblock all three scripts (`Recover.ps1`, `ToolSetup.ps1`, `RecoveryStages.ps1`) with `Unblock-File` if you downloaded them as a ZIP.
 
 Replace the example paths with your own.
 
