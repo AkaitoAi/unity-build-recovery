@@ -20,6 +20,24 @@ from typing import Callable, Optional
 from scanner import inspect_game, TOOLS_ROOT, SEVEN_ZIP
 from unity_playable_scaffolder import scaffold_unity_project, setup_playable_web_runner, INSTALLED_EDITORS
 
+def run_tree(cmd, timeout):
+    """subprocess.run that, on a timeout, ends the whole process tree (a PowerShell script that
+    started AssetRipper would otherwise leave AssetRipper running), then raises TimeoutExpired."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+                            stdin=subprocess.DEVNULL)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                       stdin=subprocess.DEVNULL)
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            proc.kill()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 class RecoveryPipeline:
     def __init__(self, input_file: str, work_folder: str, logger: Optional[Callable[[str], None]] = None):
         self.input_file = input_file
@@ -112,6 +130,10 @@ class RecoveryPipeline:
         ]:
             os.makedirs(d, exist_ok=True)
 
+    def original_copy(self) -> str:
+        """The copy of the package inside the workspace. Stages read this, never the user's file."""
+        return os.path.join(self.dir_00_original, os.path.basename(self.input_file))
+
     def run_stage_0_intake(self, info: dict) -> bool:
         self.log(f"--- [STAGE 0] Intake & Verification ---")
         if os.path.isdir(self.input_file):
@@ -119,13 +141,20 @@ class RecoveryPipeline:
                              "or use Recover.ps1 for Windows build folders.")
         self.create_directories()
 
-        dest = os.path.join(self.dir_00_original, os.path.basename(self.input_file))
+        dest = self.original_copy()
         if not os.path.exists(dest):
             self.log(f"Copying game package to 00_original...")
             shutil.copy2(self.input_file, dest)
         else:
             os.utime(dest, None)  # mark it as checked on this run
             self.log("Original copy already present in 00_original.")
+        # Every later stage reads this copy, so it must be the package that was inspected.
+        expected = str(info.get("sha256") or "")
+        if expected:
+            from scanner import calculate_sha256
+            if calculate_sha256(dest) != expected:
+                raise ValueError("The package in 00_original does not match the file that was inspected "
+                                 "(it changed, or the folder holds another package). Nothing was recovered.")
 
         self.log(f"Game: {info.get('name')}")
         self.log(f"Engine: {info.get('engine')} ({info.get('backend')})")
@@ -176,7 +205,7 @@ class RecoveryPipeline:
         exe = os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe")
         if not os.path.exists(exe):
             raise FileNotFoundError(f"GDRE Tools not found at {exe}.")
-        source = os.path.join(self.dir_00_original, os.path.basename(self.input_file))
+        source = self.original_copy()
         if not os.path.exists(source):
             raise FileNotFoundError("Run the intake stage first: the original copy is missing.")
         if source.lower().endswith((".xapk", ".zip", ".apks")):
@@ -205,7 +234,10 @@ class RecoveryPipeline:
         self.log(f"--- [STAGE 1] Unpacking Package with 7-Zip ---")
         if not os.path.exists(SEVEN_ZIP):
             raise FileNotFoundError(f"7-Zip not found at {SEVEN_ZIP}. Install it there or set RE_TOOLS.")
-        cmd = [SEVEN_ZIP, "x", self.input_file, f"-o{self.dir_01_extracted}", "-y"]
+        package = self.original_copy()
+        if not os.path.isfile(package):
+            raise FileNotFoundError("Run the intake stage first: the original copy is missing.")
+        cmd = [SEVEN_ZIP, "x", package, f"-o{self.dir_01_extracted}", "-y"]
         self.log(f"Executing: {' '.join(cmd)}")
         res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                              stdin=subprocess.DEVNULL, timeout=3600)
@@ -410,10 +442,9 @@ class RecoveryPipeline:
             ]
             self.log(f"Running AssetRipper on 01_extracted...")
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                                     stdin=subprocess.DEVNULL, timeout=2400)
+                res = run_tree(cmd, timeout=3300)
             except subprocess.TimeoutExpired:
-                self.log("  [AssetRipper] timed out after 40 minutes.")
+                self.log("  [AssetRipper] timed out after 55 minutes; it and everything it started were stopped.")
                 return False
             for line in res.stdout.splitlines():
                 if line.strip():
@@ -511,8 +542,8 @@ class RecoveryPipeline:
                 if name.lower().endswith(".apk"):
                     apks.append(os.path.join(folder, name))
         if not apks:
-            original = self.input_file
-            if original.lower().endswith(".apk"):
+            original = self.original_copy()
+            if original.lower().endswith(".apk") and os.path.isfile(original):
                 apks = [original]
         if not apks:
             self.log("No APK found to decompile with JADX.")

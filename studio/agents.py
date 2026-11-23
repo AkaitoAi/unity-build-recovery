@@ -154,6 +154,76 @@ def _copy_to_clipboard(text: str) -> bool:
         return False
 
 
+# ----------------------------------------------------------------------------- tracking
+# The studio cannot sandbox an agent, but it can know one is working in a workspace and keep its own
+# stages, audits and installs from changing that folder underneath it. A command-line agent is
+# tracked by its process; a desktop app cannot be watched, so it holds the workspace until the user
+# says it has finished. Lock order: server.PIPELINE_LOCK first, then TRACK_LOCK.
+
+import threading
+
+TRACK_LOCK = threading.Lock()
+TRACKED = {}        # workspace key -> {"agent", "pid", "started", "proc", "config", "workspace", "manual"}
+
+
+def _key(work_folder: str) -> str:
+    return os.path.normcase(os.path.realpath(work_folder))
+
+
+def _drop(key: str) -> None:
+    entry = TRACKED.pop(key, None)
+    if entry and entry.get("config"):
+        try:
+            os.remove(entry["config"])
+        except OSError:
+            pass
+
+
+def _purge() -> None:
+    for key in [k for k, e in TRACKED.items() if e.get("proc") is not None and e["proc"].poll() is not None]:
+        _drop(key)
+
+
+def active(work_folder: str = "") -> list:
+    """Agents the studio started that are still working. With a folder, only that workspace's."""
+    with TRACK_LOCK:
+        _purge()
+        wanted = _key(work_folder) if work_folder else ""
+        return [{"agent": e["agent"], "pid": e["pid"], "started": e["started"], "workspace": e["workspace"],
+                 "manual": e["proc"] is None}
+                for k, e in TRACKED.items() if not wanted or k == wanted]
+
+
+def reserve(work_folder: str, name: str = "") -> bool:
+    """Claims the workspace before the agent starts. False when an agent already holds it."""
+    with TRACK_LOCK:
+        _purge()
+        key = _key(work_folder)
+        if key in TRACKED:
+            return False
+        TRACKED[key] = {"agent": name, "pid": None, "started": time.time(), "proc": None, "config": "",
+                        "workspace": work_folder}
+        return True
+
+
+def release(work_folder: str) -> bool:
+    """The user says the agent has finished (or the launch failed)."""
+    with TRACK_LOCK:
+        key = _key(work_folder)
+        found = key in TRACKED
+        _drop(key)
+        return found
+
+
+def _register(work_folder: str, name: str, proc, config: str = "") -> None:
+    with TRACK_LOCK:
+        TRACKED[_key(work_folder)] = {"agent": name, "pid": getattr(proc, "pid", None), "started": time.time(),
+                                      "proc": proc, "config": config, "workspace": work_folder}
+
+
+_SHELL_UNSAFE = set('&|^%<>"')
+
+
 def check_agent(agent_id: str) -> None:
     """Raises ValueError unless this is a known agent that is installed."""
     agent = _by_id.get(agent_id)
@@ -164,8 +234,24 @@ def check_agent(agent_id: str) -> None:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
 
 
-def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bool = False) -> dict:
-    """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app)."""
+def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bool = False,
+           copy_prompt: bool = True) -> dict:
+    """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app).
+
+    The caller reserves the workspace first (reserve); this registers the running agent, or
+    releases the reservation if the start fails."""
+    try:
+        return _launch(agent_id, source, work_folder, info, use_rea, copy_prompt)
+    except BaseException:
+        release(work_folder)
+        try:
+            os.remove(os.path.join(work_folder, ".rea-mcp.json"))
+        except OSError:
+            pass
+        raise
+
+
+def _launch(agent_id, source, work_folder, info, use_rea, copy_prompt):
     agent = _by_id.get(agent_id)
     if not agent:
         raise ValueError("Unknown agent.")
@@ -173,6 +259,9 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bo
     path = _find_desktop(agent) if desktop else _which(agent["exe"])
     if not path:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
+    if path.lower().endswith((".cmd", ".bat")) and any(c in _SHELL_UNSAFE for c in work_folder):
+        raise ValueError(f"{agent['name']} starts through a .cmd shim, and the workspace path contains a character "
+                         'cmd.exe treats specially (& | ^ % < > "). Choose a workspace with a plainer path.')
     os.makedirs(work_folder, exist_ok=True)
     task_path = os.path.join(work_folder, "AGENT_TASK.md")
     rea = rea_support.find_rea() if use_rea else None
@@ -186,9 +275,11 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bo
         handle.write(prompt)
 
     pasted = True
+    config = ""
     if desktop:
         args = [path] + [part.replace("{workspace}", work_folder) for part in agent["launch"]]
         subprocess.Popen(args, cwd=work_folder, close_fds=True)
+        _register(work_folder, agent["name"], None)       # held until the user says it has finished
     else:
         args = [path]
         if via_mcp and agent["id"] == "claude":
@@ -204,14 +295,15 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bo
         elif agent["prompt_args"] is not None:
             args += agent["prompt_args"] + [FIRST_MESSAGE]
             pasted = False  # flags for the rest are unknown here: open it empty, user pastes the line
-        subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
-                         stdin=None, stdout=None, stderr=None)
-    # Every launch puts the full prompt for this game on the clipboard, so it can be pasted into
-    # any agent that did not take the first message by itself. If the prompt were too large for
-    # the clipboard route, the path of the task file is copied instead.
+        proc = subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
+                                stdin=None, stdout=None, stderr=None)
+        _register(work_folder, agent["name"], proc, config)   # the MCP config is removed when it exits
+    # By default the prompt for this game goes on the clipboard, so it can be pasted into any agent
+    # that did not take the first message by itself. If the prompt were too large for the clipboard
+    # route, the path of the task file is copied instead. The page lets the user turn this off.
     fallback = f'Read "{task_path}" and complete every step in it without asking me any questions.'
     clipboard_text = prompt if len(prompt) < 30000 else fallback
-    copied = _copy_to_clipboard(clipboard_text)
+    copied = _copy_to_clipboard(clipboard_text) if copy_prompt else False
     return {"agent": agent["name"], "task_file": task_path, "workspace": work_folder,
             "paste_this": clipboard_text if pasted else "",
             "copy_text": clipboard_text, "copy_chars": len(clipboard_text),

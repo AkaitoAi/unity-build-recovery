@@ -20,7 +20,7 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from paths import TOOLS_ROOT
+from paths import TOOLS_ROOT, NONCE_PATH
 import craft
 import agents
 import audit
@@ -34,8 +34,40 @@ from tool_updates import check_updates, install
 import tool_updates
 
 PORT = 5899
-SESSION_TOKEN = secrets.token_urlsafe(24)
+SESSION_TOKEN = secrets.token_urlsafe(24)       # sent with every API call by the page
+SESSION_COOKIE = secrets.token_urlsafe(24)      # proves a browser was opened with the launch nonce
 MAX_BODY_BYTES = 1_000_000
+
+# The page is only served to a browser that was opened by the launcher. The launcher reads a
+# one-use nonce from a file in the user's own profile and opens /?n=<nonce>; the server answers
+# with a cookie and rotates the nonce. Another Windows account, or a process that cannot read this
+# profile, can reach the port but never gets the page, so never gets the API token inside it.
+_NONCE_LOCK = threading.Lock()
+_nonce = ""
+
+
+def rotate_nonce() -> str:
+    """Makes a new launch nonce and writes it where this user's launcher can read it."""
+    global _nonce
+    with _NONCE_LOCK:
+        _nonce = secrets.token_urlsafe(18)
+        try:
+            os.makedirs(os.path.dirname(NONCE_PATH), exist_ok=True)
+            with open(NONCE_PATH, "w", encoding="ascii") as handle:
+                handle.write(_nonce)
+        except OSError:
+            pass
+        return _nonce
+
+
+def consume_nonce(supplied: str) -> bool:
+    """True once for the current nonce; it is replaced at once so a copied link does not work twice."""
+    with _NONCE_LOCK:
+        ok = bool(_nonce) and bool(supplied) and secrets.compare_digest(
+            supplied.encode("utf-8", "replace"), _nonce.encode("ascii"))
+    if ok:
+        rotate_nonce()
+    return ok
 
 # Live view of a pipeline run, so the page can show which tool is working right now.
 # The run happens inside one long request, so without this the console stayed silent
@@ -126,13 +158,58 @@ def resolve_work(path, must_exist: bool = False) -> str:
         raise ValueError("Choose a new subfolder, not a Windows, Program Files or personal folder itself.")
     if must_exist and not os.path.isdir(real):
         raise ValueError("That workspace folder does not exist yet. Run recovery first.")
+    # A workspace sits beside other workspaces, never inside one: its stages would write into a
+    # folder that belongs to a different game.
+    parent = os.path.dirname(real)
+    while parent and os.path.dirname(parent) != parent:
+        if os.path.isfile(os.path.join(parent, ".run.json")):
+            raise ValueError("That folder is inside another recovery workspace. Choose a folder beside it.")
+        parent = os.path.dirname(parent)
     if os.path.isdir(real):
-        entries = os.listdir(real)
-        studio_made = os.path.exists(os.path.join(real, ".run.json")) or os.path.isdir(os.path.join(real, "00_original"))
-        if entries and not studio_made:
+        if os.listdir(real) and not _is_studio_workspace(real):
             raise ValueError("That folder already has other files in it. Choose an empty folder, "
                              "or one this studio created.")
     return real
+
+
+def _is_studio_workspace(real: str) -> bool:
+    """A folder the studio made: a readable marker with a package hash, or (older runs) the
+    00_original and reports folders together. A stray file named .run.json is not enough."""
+    marker = os.path.join(real, ".run.json")
+    if os.path.isfile(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            return False
+        return isinstance(data, dict) and isinstance(data.get("sha256"), str) and bool(data["sha256"])
+    return os.path.isdir(os.path.join(real, "00_original")) and os.path.isdir(os.path.join(real, "reports"))
+
+
+def _newest_cpp2il() -> str:
+    """The Cpp2IL build the pipeline would use: any .exe in the Cpp2IL folder, newest first."""
+    folder = os.path.join(TOOLS_ROOT, "Cpp2IL")
+    try:
+        exes = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".exe")]
+    except OSError:
+        exes = []
+    return max(exes, key=os.path.getmtime) if exes else os.path.join(folder, "Cpp2IL.exe")
+
+
+def _newest_jadx() -> str:
+    """The JADX the pipeline would use: the newest jadx* folder with a jadx.bat."""
+    found = []
+    try:
+        entries = os.listdir(TOOLS_ROOT)
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.lower().startswith("jadx"):
+            for sub in (os.path.join(TOOLS_ROOT, entry, "bin", "jadx.bat"), os.path.join(TOOLS_ROOT, entry, "jadx.bat")):
+                if os.path.exists(sub):
+                    found.append(sub)
+                    break
+    return max(found, key=os.path.getmtime) if found else os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat")
 
 
 def AR_SCRIPTS(work_folder: str) -> str:
@@ -140,17 +217,39 @@ def AR_SCRIPTS(work_folder: str) -> str:
     return os.path.join(work_folder, "02_assetripper", "ExportedProject", "Assets", "Scripts")
 
 
-def acquire_run() -> bool:
+def busy_reason(work: str = "", any_agent: bool = False) -> str:
+    """Why a new run cannot start now ('' when it can). Call with PIPELINE_LOCK held."""
+    if PIPELINE_STATE["running"]:
+        return "A recovery run or audit is already in progress."
+    if install_snapshot()["running"]:
+        return "A tool install is in progress."
+    if craft.is_running():
+        return "A Craft Anything run is in progress."
+    if work or any_agent:
+        working = agents.active(work)       # no folder: any agent the studio started
+        if working:
+            return (f"{working[0]['agent']} is working in this workspace. Wait for it to finish, or press "
+                    "'Agent finished' on the Agent Recovery tab if it already has.")
+    return ""
+
+
+def acquire_run(work: str = ""):
+    """Takes the single run slot. Returns an owner token, or None when something else is running
+    (or an agent holds this workspace). Only the owner's token releases it."""
     with PIPELINE_LOCK:
-        if PIPELINE_STATE["running"] or install_snapshot()["running"] or craft.is_running():
-            return False
+        if busy_reason(work):
+            return None
+        token = secrets.token_hex(8)
         PIPELINE_STATE["running"] = True
-        return True
+        PIPELINE_STATE["owner"] = token
+        return token
 
 
-def release_run() -> None:
+def release_run(token) -> None:
     with PIPELINE_LOCK:
-        PIPELINE_STATE["running"] = False
+        if token and PIPELINE_STATE.get("owner") == token:
+            PIPELINE_STATE["running"] = False
+            PIPELINE_STATE["owner"] = ""
 
 # Names of the bundled tools, matched against log lines to show the one in use.
 PIPELINE_TOOLS = (
@@ -209,7 +308,8 @@ def pipeline_snapshot(after: int = 0) -> dict:
 def activity_snapshot() -> dict:
     """Everything that is running or just finished, in one answer for the page's activity bar."""
     return {"now": time.time(), "pipeline": pipeline_snapshot(10 ** 9),
-            "install": install_snapshot(), "craft": craft.snapshot(10 ** 9)}
+            "install": install_snapshot(), "craft": craft.snapshot(10 ** 9),
+            "agents": agents.active()}
 
 class StudioRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -234,24 +334,53 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
             return False
+        if self.command == "POST" and not origin:
+            return False        # the page always sends an Origin; a command-line client must too
         if urllib.parse.urlparse(self.path).path.startswith("/api/"):
             supplied = self.headers.get("X-Studio-Token", "")
             if not secrets.compare_digest(supplied.encode("utf-8", "replace"), SESSION_TOKEN.encode("utf-8")):
                 return False
         return True
 
-    def _serve_index(self):
-        """Serves the page with this launch's token so only the page can call the API."""
+    def _has_session_cookie(self) -> bool:
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "studio_session" and secrets.compare_digest(
+                    value.encode("utf-8", "replace"), SESSION_COOKIE.encode("utf-8")):
+                return True
+        return False
+
+    def _serve_index(self, query: str = ""):
+        """Serves the page, with this launch's API token, to a browser the launcher opened.
+
+        The launcher's one-use nonce is exchanged for a cookie; after that a reload works on the
+        cookie alone. Anything else gets a plain explanation and no token."""
+        supplied = urllib.parse.parse_qs(query).get("n", [""])[0]
+        new_cookie = consume_nonce(supplied) if supplied else False
+        if not new_cookie and not self._has_session_cookie():
+            data = ("<!doctype html><meta charset='utf-8'><title>Aether Recon Studio</title>"
+                    "<p>Open the studio from its launcher (Run_Recovery_Studio.bat). "
+                    "This address only opens in the studio's own window.</p>").encode("utf-8")
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as handle:
             page = handle.read()
+        # The nonce is used up; drop it from the address bar so a reload does not look like a retry.
         snippet = ("<script>(function(){var t=" + json.dumps(SESSION_TOKEN) + ";var f=window.fetch;"
                    "window.fetch=function(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},"
-                   "{'X-Studio-Token':t});return f(u,o);};})();</script>")
+                   "{'X-Studio-Token':t});return f(u,o);};"
+                   "try{if(location.search){history.replaceState(null,'',location.pathname);}}catch(e){}})();</script>")
         page = page.replace("<head>", "<head>" + snippet, 1)
         data = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        if new_cookie:
+            self.send_header("Set-Cookie", f"studio_session={SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Strict")
         self.end_headers()
         self.wfile.write(data)
 
@@ -277,7 +406,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         path = parsed.path
 
         if path in ("/", "/index.html"):
-            self._serve_index()
+            self._serve_index(parsed.query)
         elif path == "/api/tools/status":
             self.handle_tools_status()
         elif path == "/api/scripts/read":
@@ -373,12 +502,12 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             if name not in [tool["name"] for tool in tool_updates.TOOLS]:
                 raise ValueError("Unknown tool.")
             with PIPELINE_LOCK:
-                busy = install_snapshot()["running"] or PIPELINE_STATE["running"]
+                busy = busy_reason(any_agent=True)
                 if not busy:
                     install_set(running=True, tool=name, percent=0, message="Starting...", error="",
                                 started_at=time.time(), finished_at=0.0)
             if busy:
-                self.send_json({"status": "busy", "message": "A recovery run or install is already running."}, status=409)
+                self.send_json({"status": "busy", "message": busy}, status=409)
             else:
                 approved = {"version": str(body.get("version", "")), "sha256": str(body.get("sha256", "")).lower()}
                 try:
@@ -389,6 +518,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "started", "tool": name})
         elif path == "/api/agents/launch":
             self.handle_agent_launch(body)
+        elif path == "/api/agents/release":
+            self.handle_agent_release(body)
         elif path == "/api/audit/run":
             self.handle_audit_run(body)
         elif path == "/api/craft/run":
@@ -441,10 +572,12 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                             "message": "Some tools this game needs are not installed.",
                             "stages": [], "failed": []}, status=409)
             return
-        if not acquire_run():
-            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress.",
+        token = acquire_run(dest)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(dest),
                             "stages": [], "failed": []}, status=409)
             return
+        payload = None
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
                      message="", results=[], log=[], kind="recovery", plan=[], stage_index=0, stage_total=0,
                      started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
@@ -508,18 +641,22 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 message = "All stages produced output."
             status = "partial" if failed else "complete"
             pipeline_set(stage="Finished", tool="", status=status, message=message, finished_at=time.time())
-            release_run()
-            self.send_json({
-                "status": status,
-                "message": message,
-                "stages": pipeline.results,
-                "failed": failed,
-            })
+            payload = {"status": status, "message": message, "stages": pipeline.results, "failed": failed}
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             pipeline_set(stage="Failed", tool="", status="error", message=message, finished_at=time.time())
-            release_run()
-            self.send_json({"status": "error", "message": message, "stages": [], "failed": []})
+            payload = {"status": "error", "message": message, "stages": [], "failed": []}
+        finally:
+            release_run(token)
+        # Sent last and outside the try: if the browser has gone away, the run's real outcome
+        # (already recorded above) is not overwritten by a broken-pipe error.
+        self.send_json(payload)
+
+    def _busy_message(self, work: str = "") -> str:
+        with PIPELINE_LOCK:
+            return busy_reason(work) or "Another run is in progress."
+
+    STAGE_TOOLS = {1: ("7-Zip",), 2: ("AssetRipper",), 3: ("Cpp2IL",), 4: ()}
 
     def handle_pipeline_stage(self, body):
         src = str(body.get("source", "")).strip()
@@ -529,16 +666,27 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             raise ValueError("stage must be 1 to 4")
         if not src or not os.path.isfile(src):
             raise ValueError("The package file does not exist.")
-        if inspect_game(src).get("engine") == "Godot":
+        info = inspect_game(src)
+        if info.get("engine") == "Godot":
             raise ValueError("Godot games recover in one step. Use the full recovery button.")
-        if not acquire_run():
-            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
+        # A single stage needs the same approval as a full run for the tools it uses.
+        needed = list(self.STAGE_TOOLS[stage])
+        if stage == 3 and not (info.get("has_il2cpp") and not tool_needs._il2cpp_tool_present()):
+            needed = []                       # only an IL2CPP build needs a dumper
+        missing = tool_needs.missing_named(needed)
+        if missing:
+            self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
+                            "message": "Some tools this stage needs are not installed."}, status=409)
             return
+        token = acquire_run(dest)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(dest)}, status=409)
+            return
+        payload = None
         try:
             pipeline_set(running=True, stage=f"Stage {stage}", tool="", status="running", message="", results=[], log=[],
                          kind="stage", plan=[f"Stage {stage}"], stage_index=1, stage_total=1,
                          started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
-            info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.create_directories()
             pipeline.claim_workspace(info)
@@ -560,10 +708,17 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 pipeline.generate_report(info)
             after = pipeline.count_files(*folders)
             ok = after > 0 and (after > before or pipeline.newest_mtime(*folders) >= started)
+            message = "" if ok else "The stage wrote no files. Check the log."
+            pipeline_set(stage="Finished", tool="", status="complete" if ok else "partial",
+                         message=message or f"Stage {stage} finished.", finished_at=time.time())
+            payload = {"status": "complete" if ok else "empty", "stage": stage, "message": message}
+        except Exception as exc:
+            pipeline_set(stage="Failed", tool="", status="error", message=f"{type(exc).__name__}: {exc}",
+                         finished_at=time.time())
+            raise
         finally:
-            release_run()
-        self.send_json({"status": "complete" if ok else "empty", "stage": stage,
-                        "message": "" if ok else "The stage wrote no files. Check the log."})
+            release_run(token)
+        self.send_json(payload)
 
     def handle_scripts_scan(self, body):
         work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
@@ -600,7 +755,14 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             item.is_selected = True
             items.append(item)
 
-        exp, skp = export_selected_scripts(items, target_dir, [AR_SCRIPTS(work_folder)])
+        token = acquire_run(work_folder)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(work_folder)}, status=409)
+            return
+        try:
+            exp, skp = export_selected_scripts(items, target_dir, [AR_SCRIPTS(work_folder)])
+        finally:
+            release_run(token)
         self.send_json({"status": "exported", "exported": exp, "skipped": skp, "target": target_dir})
 
     def handle_auto_playable_preset(self, body):
@@ -608,6 +770,17 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         proj_dir = os.path.join(work_folder, "05_project")
         if RecoveryPipeline.workspace_engine(work_folder) == "Godot" or os.path.exists(os.path.join(proj_dir, "project.godot")):
             raise ValueError("This is a Godot workspace. The Unity scaffold does not apply to it.")
+        token = acquire_run(work_folder)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(work_folder)}, status=409)
+            return
+        try:
+            result = self._auto_playable(work_folder, proj_dir, body)
+        finally:
+            release_run(token)
+        self.send_json(result)
+
+    def _auto_playable(self, work_folder, proj_dir, body):
         scripts_dir = AR_SCRIPTS(work_folder)
         if not os.path.isdir(scripts_dir) or not any(files for _r, _d, files in os.walk(scripts_dir)):
             scripts_dir = os.path.join(work_folder, "03_scripts")
@@ -628,7 +801,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
         # 2. Scaffold Unity project and generate missing SDK stubs
         res = scaffold_unity_project(proj_dir, body.get("unity_version", ""), "RecoveredGame")
-        self.send_json({"status": "playable_ready", "results": res, "gameplay_scripts_exported": len(gameplay_items)})
+        return {"status": "playable_ready", "results": res, "gameplay_scripts_exported": len(gameplay_items)}
 
     def handle_agent_launch(self, body):
         if body.get("confirm_send") is not True:
@@ -637,21 +810,36 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         if not src or not os.path.exists(src):
             raise ValueError("The package does not exist.")
         work_folder = resolve_work(body.get("destination", ""))
-        with PIPELINE_LOCK:
-            if PIPELINE_STATE["running"] or install_snapshot()["running"] or craft.is_running():
-                self.send_json({"status": "busy", "message": "Another run or install is in progress."}, status=409)
-                return
         info = inspect_game(src)
         use_rea = body.get("use_rea") is True
+        copy_prompt = body.get("copy_prompt", True) is not False
         missing = tool_needs.missing_tools(info, extra=["REA"] if use_rea else ())
         if missing:
             self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
                             "message": "Some tools are not installed."}, status=409)
             return
-        agents.check_agent(str(body.get("agent", "")))
-        RecoveryPipeline(src, work_folder).claim_workspace(info)
-        result = agents.launch(str(body.get("agent", "")), src, work_folder, info, use_rea=use_rea)
+        agent_id = str(body.get("agent", ""))
+        agents.check_agent(agent_id)
+        # Check and claim in one step, so two clicks cannot start two agents in one workspace.
+        with PIPELINE_LOCK:
+            reason = busy_reason(work_folder)
+            if not reason and not agents.reserve(work_folder, agent_id):
+                reason = "An agent is already working in this workspace."
+        if reason:
+            self.send_json({"status": "busy", "message": reason}, status=409)
+            return
+        try:
+            RecoveryPipeline(src, work_folder).claim_workspace(info)
+            result = agents.launch(agent_id, src, work_folder, info, use_rea=use_rea, copy_prompt=copy_prompt)
+        except BaseException:
+            agents.release(work_folder)
+            raise
         self.send_json({"status": "started", **result})
+
+    def handle_agent_release(self, body):
+        """The user says the agent in this workspace has finished, so the studio may use it again."""
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
+        self.send_json({"released": agents.release(work_folder)})
 
     def handle_audit_run(self, body):
         """Runs the studio audit on 05_project or 06_playable. Reads files only."""
@@ -661,8 +849,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             raise ValueError("The audit target must be 05_project or 06_playable.")
         if not os.path.isdir(os.path.join(work_folder, target)):
             raise ValueError(f"{target} does not exist in this workspace yet.")
-        if not acquire_run():
-            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
+        token = acquire_run(work_folder)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(work_folder)}, status=409)
             return
         try:
             # The stage list and log of the last recovery stay on screen: only the run state changes.
@@ -674,7 +863,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             pipeline_set(stage="Failed", status="error", message=f"{type(exc).__name__}: {exc}", finished_at=time.time())
             raise
         finally:
-            release_run()
+            release_run(token)
         self.send_json(report)
 
     def handle_craft_run(self, body):
@@ -684,42 +873,61 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         rounds = body.get("rounds", 2)
         if isinstance(rounds, bool) or not isinstance(rounds, int):
             raise ValueError("Rounds must be a whole number.")
+        source = str(body.get("source", "05_project"))
         with PIPELINE_LOCK:
-            if PIPELINE_STATE["running"] or install_snapshot()["running"] or craft.is_running():
-                self.send_json({"status": "busy", "message": "Another run or install is in progress."}, status=409)
-                return
+            reason = busy_reason(work_folder)
             # Claim the slot before the copy starts so a second click cannot start another run.
-            craft.STATE.update(running=True, status="starting", message="", folder="", log=[])
+            if not reason and not craft.claim():
+                reason = "A Craft Anything run is in progress."
+        if reason:
+            self.send_json({"status": "busy", "message": reason}, status=409)
+            return
         try:
             folder = craft.start(work_folder, str(body.get("task", "")), str(body.get("backend", "")),
-                                 str(body.get("cli", "")), rounds)
+                                 str(body.get("cli", "")), rounds, source)
         except Exception:
-            craft.STATE.update(running=False, status="idle")
+            craft.unclaim()
             raise
         self.send_json({"status": "started", "folder": folder})
 
     def handle_open_unity(self, body):
-        """Opens 05_project in the matching Unity editor. No batch file is ever run: a recovered
-        project can contain one, and this button should not execute anything it holds."""
+        """Opens a rebuilt project in the matching Unity editor.
+
+        Opening a project makes Unity compile its scripts, which runs code from the recovered
+        game inside the editor, so the page must say so and the request must confirm it. No batch
+        file is ever run: a recovered project can contain one."""
         import re as _re
+        if body.get("confirm_run_code") is not True:
+            raise ValueError("Opening a project in Unity compiles and runs its scripts in the editor. "
+                             "Confirm that you want that for this recovered game.")
         work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
-        proj_dir = os.path.join(work_folder, "05_project")
+        target = str(body.get("target", "05_project"))
+        if target not in ("05_project", "06_playable"):
+            raise ValueError("Choose 05_project or 06_playable.")
+        proj_dir = os.path.join(work_folder, target)
         if RecoveryPipeline.workspace_engine(work_folder) == "Godot":
             raise ValueError("This is a Godot workspace; there is no Unity project to open. Open 05_project in the Godot editor.")
         version_file = os.path.join(proj_dir, "ProjectSettings", "ProjectVersion.txt")
         if not os.path.isfile(version_file):
-            raise ValueError("There is no Unity project in 05_project (a Godot workspace has none).")
+            raise ValueError(f"There is no Unity project in {target} (it has no ProjectSettings/ProjectVersion.txt).")
         with open(version_file, "r", encoding="utf-8", errors="ignore") as handle:
             match = _re.search(r"m_EditorVersion:\s*(\S+)", handle.read())
         version = match.group(1) if match else ""
         line = ".".join(version.split(".")[:2])
-        exe = next((path for ver, path in INSTALLED_EDITORS if ver == version), None) \
-            or next((path for ver, path in INSTALLED_EDITORS if line and ver.startswith(line + ".")), None)
+        exe = (next((path for ver, path in INSTALLED_EDITORS if ver == version), None)
+               or next((path for ver, path in INSTALLED_EDITORS if line and ver.startswith(line + ".")), None))
         if not exe:
             raise ValueError(f"Unity {version or '(unknown version)'} is not installed. Install it with Unity Hub, "
                              "or open the folder yourself in another version (Unity will upgrade the project).")
-        subprocess.Popen([exe, "-projectPath", proj_dir])
-        self.send_json({"status": "launched", "exe": exe, "version": version})
+        token = acquire_run(work_folder)
+        if not token:
+            self.send_json({"status": "busy", "message": self._busy_message(work_folder)}, status=409)
+            return
+        try:
+            subprocess.Popen([exe, "-projectPath", proj_dir])
+        finally:
+            release_run(token)
+        self.send_json({"status": "launched", "exe": exe, "version": version, "target": target})
 
     def handle_browse(self, query):
         """Browse File / Browse Folder.
@@ -787,11 +995,11 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             {"name": "AssetStudio Mod (CLI/GUI)", "role": "Asset Bundle & CAB Inspector", "path": os.path.join(TOOLS_ROOT, "AssetStudioModCLI", "AssetStudioModCLI_net9_win64", "AssetStudioModCLI.exe")},
             {"name": "GDRE Tools (Godot)", "role": "Godot Project Recovery", "path": os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe")},
             {"name": "Il2CppDumper", "role": "IL2CPP Symbol & DummyDll Dumper", "path": os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")},
-            {"name": "Cpp2IL", "role": "AOT Binary to C# Pseudocode", "path": os.path.join(TOOLS_ROOT, "Cpp2IL", "Cpp2IL.exe")},
+            {"name": "Cpp2IL", "role": "AOT Binary to C# Pseudocode", "path": _newest_cpp2il()},
             {"name": "ILSpy (GUI)", "role": "Managed C# Assembly Decompiler", "path": os.path.join(TOOLS_ROOT, "ILSpy", "ILSpy.exe")},
             {"name": "Mono.Cecil", "role": "IL Bytecode Inspector & Patching", "path": os.path.join(TOOLS_ROOT, "Mono.Cecil", "lib", "net40", "Mono.Cecil.dll")},
             {"name": "Ghidra 12.1.4 (NSA)", "role": "Deep Native Disassembler/Decompiler", "path": os.path.join(TOOLS_ROOT, "ghidra", "support", "analyzeHeadless.bat")},
-            {"name": "JADX 1.5.6", "role": "Android DEX / Java Decompiler", "path": os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat")},
+            {"name": "JADX", "role": "Android DEX / Java Decompiler", "path": _newest_jadx()},
             {"name": "7-Zip 26.05 (x64)", "role": "High Speed Multi-Thread Unpacker", "path": os.path.join(TOOLS_ROOT, "7-Zip", "7z.exe")},
             {"name": "LLVM Clang & Objdump", "role": "Native Binary Disassembly Toolchain", "path": os.path.join(TOOLS_ROOT, "llvm", "bin", "llvm-objdump.exe")},
             {"name": "FFmpeg Studio", "role": "Audio / Video Codec Transcoder", "path": os.path.join(TOOLS_ROOT, "ffmpeg", "bin", "ffmpeg.exe")},
@@ -814,6 +1022,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_json(out)
 
 def launch_studio(open_window=True):
+    rotate_nonce()
     # Start HTTP server
     server = ThreadingHTTPServer(("127.0.0.1", PORT), StudioRequestHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -821,7 +1030,7 @@ def launch_studio(open_window=True):
     print(f"[AETHER RECON] Server running at http://127.0.0.1:{PORT}")
 
     # Launch in standalone App Window Mode
-    app_url = f"http://127.0.0.1:{PORT}"
+    app_url = f"http://127.0.0.1:{PORT}/?n={_nonce}"
     edge_paths = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
