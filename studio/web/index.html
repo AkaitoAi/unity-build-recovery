@@ -645,6 +645,25 @@
         </div>
         <div id="stage-stepper" class="stage-stepper"></div>
       </div>
+
+      <!-- Studio audit: numbers the studio computed itself from the files -->
+      <div class="card">
+        <div class="card-title">
+          <span>🔎 Studio audit (reads files only)</span>
+          <span>
+            <select id="audit-target" class="input-field" style="width:auto;display:inline-block;">
+              <option value="05_project">05_project (as recovered)</option>
+              <option value="06_playable">06_playable (agent's repaired copy)</option>
+            </select>
+            <button class="btn" onclick="auditRun()">Run audit</button>
+            <button class="btn" onclick="auditLoad()">Show last</button>
+          </span>
+        </div>
+        <div id="audit-box" style="font-size:12px;color:var(--text-muted);">
+          Counts what the files prove: missing scripts, duplicate types, broken braces, build scenes, missing packages,
+          online SDKs. It cannot show that the project compiles, loads or plays; the editor does that.
+        </div>
+      </div>
     </div>
 
     <!-- TAB 2: AI SCRIPT SELECTOR -->
@@ -754,6 +773,7 @@
         </label>
         <div style="display:flex;gap:8px;align-items:center;">
           <button class="btn btn-primary" onclick="agentLaunch()">Open selected agent</button>
+          <button class="btn" onclick="switchNavTo('wizard'); document.getElementById('audit-target').value='06_playable'; auditRun();">Audit the agent's 06_playable</button>
           <span id="agent-status" style="font-size:12px;color:var(--text-muted);"></span>
         </div>
       </div>
@@ -946,6 +966,71 @@ Local recovery tools are listed on the Tools tab.
       if (d.running) craftTimer = setTimeout(craftPoll, 1500);
     }
 
+    // ---- Studio audit view ----
+    const AUDIT_LABELS = {
+      missing_scripts: 'Missing scripts (lost MonoBehaviours)', duplicate_types: 'Duplicate types',
+      unbalanced_braces: 'C# files with unbalanced braces', decompiler_error_markers: 'Decompiler error markers',
+      build_scene_problem: 'Build scene problem', missing_packages: 'Packages used but not in the manifest',
+      missing_resources: 'Missing res:// files', main_scene_missing: 'Main scene missing',
+      missing_autoloads: 'Missing autoloads', undecompiled_scripts: 'Scripts left undecompiled'
+    };
+
+    function renderAudit(report) {
+      if (!report || !report.summary) return '<i>No audit yet. Press "Run audit".</i>';
+      const s = report.summary, r = report.results || {};
+      const colour = s.level === 'L1 audit clean' ? 'var(--accent-emerald)' : (s.level === 'not audited' ? 'var(--text-muted)' : 'var(--accent-amber)');
+      let html = '<div style="margin-bottom:8px;"><b style="color:' + colour + ';font-size:14px;">' + esc(s.level) + '</b> &nbsp; ' +
+        esc(report.target) + ' &middot; ' + esc(report.created) + (report.partial ? ' &middot; <b>stopped at its time limit; counts are incomplete</b>' : '') + '</div>';
+      if (r.error) return html + esc(r.error);
+      html += '<table style="width:100%;border-collapse:collapse;">';
+      Object.keys(s.findings).forEach(function (k) {
+        const v = s.findings[k];
+        html += '<tr><td style="padding:3px 6px;">' + esc(AUDIT_LABELS[k] || k) + '</td><td style="padding:3px 6px;text-align:right;font-weight:700;color:' +
+          (v ? 'var(--accent-amber)' : 'var(--accent-emerald)') + ';">' + v + '</td></tr>';
+      });
+      html += '</table>';
+      const notes = [];
+      if (r.unresolved_script_guids && r.unresolved_script_guids.count) notes.push(r.unresolved_script_guids.count + ' script reference(s) by GUID are not in the project (often Unity package scripts).');
+      if (r.unresolved_asset_guids && r.unresolved_asset_guids.count) notes.push(r.unresolved_asset_guids.count + ' asset reference(s) by GUID are not in the project (may include package assets).');
+      if (r.online_sdks && r.online_sdks.used && r.online_sdks.used.length) notes.push('Online SDKs used: ' + r.online_sdks.used.map(x => x.sdk).join(', ') + '.');
+      if (r.logic_gap && r.logic_gap.classes_without_source !== undefined) notes.push('IL2CPP: ' + r.logic_gap.classes_without_source + ' game classes (' + r.logic_gap.methods_without_bodies + ' methods) have no recovered logic.');
+      if (notes.length) html += '<div style="margin-top:8px;color:var(--text-muted);">' + notes.map(esc).join('<br>') + '</div>';
+      const c = report.comparison;
+      if (c && c.rows) {
+        html += '<div style="margin-top:10px;"><b>Before and after</b> (' + esc(c.before_target) + ' to ' + esc(c.after_target) + '): ' + c.before_total + ' to ' + c.after_total + ' findings</div>';
+        html += '<table style="width:100%;border-collapse:collapse;">' + c.rows.map(function (row) {
+          return '<tr><td style="padding:2px 6px;">' + esc(AUDIT_LABELS[row.finding] || row.finding) + '</td><td style="text-align:right;padding:2px 6px;">' +
+            row.before + ' to ' + row.after + '</td><td style="text-align:right;padding:2px 6px;color:' + (row.change < 0 ? 'var(--accent-emerald)' : (row.change > 0 ? 'var(--accent-rose)' : 'var(--text-muted)')) + ';">' +
+            (row.change > 0 ? '+' : '') + row.change + '</td></tr>';
+        }).join('') + '</table>';
+      }
+      return html;
+    }
+
+    async function auditLoad() {
+      const dest = document.getElementById('input-work').value.trim();
+      const box = document.getElementById('audit-box');
+      if (!dest) { box.innerHTML = '<i>Choose a workspace first.</i>'; return; }
+      try {
+        const res = await fetch('/api/audit/latest?work_folder=' + encodeURIComponent(dest));
+        const data = await res.json();
+        box.innerHTML = res.ok ? renderAudit(data) : esc(data.message || 'No audit.');
+      } catch (e) { box.innerHTML = esc(String(e)); }
+    }
+
+    async function auditRun() {
+      const dest = document.getElementById('input-work').value.trim();
+      const box = document.getElementById('audit-box');
+      if (!dest) return alert('Choose a workspace folder first.');
+      box.innerHTML = '<i>Auditing... the activity bar below shows how long it has run.</i>';
+      try {
+        const res = await fetch('/api/audit/run', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({work_folder: dest, target: document.getElementById('audit-target').value})});
+        const data = await res.json();
+        box.innerHTML = res.ok ? renderAudit(data) : esc(data.message || 'The audit failed.');
+      } catch (e) { box.innerHTML = esc(String(e)); }
+    }
+
     // ---- Activity bar and stage list: what is running, how far along, and for how long -----
     function fmtTime(seconds) {
       seconds = Math.max(0, Math.floor(seconds));
@@ -1023,6 +1108,15 @@ Local recovery tools are listed on the Tools tab.
         wait = (p.running || ins.running || cr.running) ? 1000 : 2500;
       } catch (e) { /* the studio may be restarting; try again shortly */ }
       setTimeout(pollActivity, wait);
+    }
+
+    function switchNavTo(tabName) {
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      const idx = ['wizard', 'scripts', 'agent', 'craft', 'tools', 'console'].indexOf(tabName);
+      const buttons = document.querySelectorAll('.nav-btn');
+      if (buttons[idx]) buttons[idx].classList.add('active');
+      document.getElementById('pane-' + tabName).classList.add('active');
     }
 
     // Logging helper
@@ -1164,6 +1258,7 @@ Local recovery tools are listed on the Tools tab.
                 + '\n\nRead reports\\RECOVERY_REPORT.md in:\n' + dest);
         }
         scanScripts();
+        auditLoad();
       } catch (e) {
         logMessage('[ERROR] ' + e);
       } finally {

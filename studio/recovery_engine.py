@@ -611,6 +611,18 @@ class RecoveryPipeline:
 
         return True
 
+    def run_stage_audit(self, info: dict) -> bool:
+        """The studio's own static audit of 05_project (see audit.py). Reads files only."""
+        import audit
+        self.log("--- [AUDIT] Studio audit of 05_project (reads files only) ---")
+        report = audit.run_audit(self.work_folder, "05_project", info.get("engine") or None)
+        summary = report["summary"]
+        self.log(f"Audit level: {summary['level']}; findings: {summary['total']}")
+        for name, count in summary["findings"].items():
+            if count:
+                self.log(f"  {name.replace('_', ' ')}: {count}")
+        return "error" not in report["results"]
+
     def run_stage_4_scaffold_project(self, info: dict) -> bool:
         self.log(f"--- [STAGE 4] Building Unity Project Folder ---")
 
@@ -730,6 +742,17 @@ class RecoveryPipeline:
             lines.append(f"- **Unity Version**: {info.get('unity_version')}")
         lines.append(f"- **ABIs**: {', '.join(info.get('abis', []))}")
         lines.append("")
+        audit_file = os.path.join(self.dir_reports, "AUDIT_05_project.json")
+        if os.path.exists(audit_file):
+            try:
+                with open(audit_file, "r", encoding="utf-8") as handle:
+                    audited = json.load(handle)
+                lines.append(f"- **Studio audit**: {audited['summary']['level']} "
+                             f"({audited['summary']['total']} finding(s); details in AUDIT.md). It reads files only: "
+                             "it does not show that the project compiles, loads or plays.")
+                lines.append("")
+            except (OSError, ValueError, KeyError):
+                pass
         lines.append("## Stage results")
         lines.append("")
         if results:

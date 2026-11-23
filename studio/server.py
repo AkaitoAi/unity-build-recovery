@@ -23,6 +23,7 @@ if APP_DIR not in sys.path:
 from paths import TOOLS_ROOT
 import craft
 import agents
+import audit
 import rea as rea_support
 import tool_needs
 from scanner import inspect_game
@@ -276,6 +277,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"tools": check_updates(force=query.get("force", ["0"])[0] == "1")})
             except Exception as exc:
                 self.send_json({"tools": [], "error": f"{type(exc).__name__}: {exc}"})
+        elif path == "/api/audit/latest":
+            work = resolve_work(urllib.parse.parse_qs(parsed.query).get("work_folder", [""])[0], must_exist=True)
+            self.send_json(audit.load_latest(work) or {})
         elif path == "/api/activity":
             self.send_json(activity_snapshot())
         elif path == "/api/agents":
@@ -372,6 +376,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "started", "tool": name})
         elif path == "/api/agents/launch":
             self.handle_agent_launch(body)
+        elif path == "/api/audit/run":
+            self.handle_audit_run(body)
         elif path == "/api/craft/run":
             self.handle_craft_run(body)
         elif path == "/api/craft/stop":
@@ -440,6 +446,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 stages = [
                     ("Intake", pipeline.run_stage_0_intake, [pipeline.dir_00_original]),
                     ("Recover Godot project", pipeline.run_stage_godot_recover, [pipeline.dir_05_project]),
+                    ("Audit", pipeline.run_stage_audit, [pipeline.dir_reports]),
                 ]
             else:
                 stages = [
@@ -449,6 +456,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                     ("Code recovery", pipeline.run_stage_3_code_recovery,
                      [pipeline.dir_03_il2cpp, pipeline.dir_03_scripts, pipeline.dir_04_jadx]),
                     ("Rebuild Unity project", pipeline.run_stage_4_scaffold_project, [pipeline.dir_05_project]),
+                    ("Audit", pipeline.run_stage_audit, [pipeline.dir_reports]),
                 ]
 
             pipeline_set(plan=[name for name, _run, _folders in stages], stage_total=len(stages))
@@ -631,6 +639,27 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         RecoveryPipeline(src, work_folder).claim_workspace(info)
         result = agents.launch(str(body.get("agent", "")), src, work_folder, info, use_rea=use_rea)
         self.send_json({"status": "started", **result})
+
+    def handle_audit_run(self, body):
+        """Runs the studio audit on 05_project or 06_playable. Reads files only."""
+        work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
+        target = str(body.get("target", "05_project"))
+        if target not in ("05_project", "06_playable"):
+            raise ValueError("The audit target must be 05_project or 06_playable.")
+        if not os.path.isdir(os.path.join(work_folder, target)):
+            raise ValueError(f"{target} does not exist in this workspace yet.")
+        if not acquire_run():
+            self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
+            return
+        try:
+            pipeline_set(running=True, stage=f"Audit {target}", tool="", status="running", message="", results=[], log=[],
+                         plan=[f"Audit {target}"], stage_index=1, stage_total=1,
+                         started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
+            report = audit.run_audit(work_folder, target)
+            pipeline_set(stage="Finished", status="complete", message=report["summary"]["level"], finished_at=time.time())
+        finally:
+            release_run()
+        self.send_json(report)
 
     def handle_craft_run(self, body):
         if body.get("confirm_send") is not True:

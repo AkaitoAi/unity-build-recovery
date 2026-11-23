@@ -103,6 +103,18 @@ ode_modulesea-agents` and a Node.js it finds in the tool root or on PATH. If RE
 - Windows build folders work in this mode, unlike the Studio's built-in pipeline.
 - The agent is not tracked by the studio. It does not hold the run lock, so do not run the built-in pipeline in the same workspace at the same time.
 
+### Studio audit
+
+The studio audits the recovered project itself, so the numbers do not depend on an agent grading its own work. It runs as the last stage of every Unity and Godot recovery and on demand from the **Studio audit** card on the Recovery tab (target `05_project`, or `06_playable` after an agent has repaired a copy). It only reads files: it never runs or loads game code and never uses the network.
+
+| For Unity it counts | For Godot it counts |
+| --- | --- |
+| scripts with no script behind them (lost MonoBehaviours), duplicate C# types, files with unbalanced braces, decompiler error markers, a missing or empty build-scene list, packages the code uses but the manifest lacks | missing `res://` files, a missing main scene, missing autoloads, bytecode scripts left undecompiled, decompiler error markers |
+
+It also reports, without counting them as defects: script and asset references by GUID that are not in the project (many are Unity package scripts, so they can be false alarms), the online SDKs the code uses, and for IL2CPP games the classes that have methods but no recovered source. The level is "L1 audit clean" when the counted findings are zero and "L1 audit partial" otherwise. **This is not a compile check:** only Unity or Godot can show that a project compiles, loads or plays.
+
+Results go to `reports\AUDIT.json`, `AUDIT.md`, and one file per target (`AUDIT_05_project.json`, `AUDIT_06_playable.json`). When both exist, the card shows a before and after table. The recovery report links the level. The agent prompt tells agents that only the studio's numbers are trusted. The audit has unit tests: `python -m unittest discover tests`.
+
 ### Progress display
 
 A bar at the bottom of every tab shows what is running, with elapsed time:
