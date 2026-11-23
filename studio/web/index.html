@@ -831,16 +831,11 @@ All 16 local recovery engines loaded and ready.
       status.innerText = data.agent + ' opened. Task file: ' + data.task_file +
         (data.paste_this ? '  Paste into the agent: ' + data.paste_this : '');
       if (data.paste_this) {
-        alert(data.agent + ' is open, but it has not started yet.
-
-Open its agent or chat panel, ' +
-          (data.copied ? 'press Ctrl+V to paste the line that was copied for you, and send it.'
-                       : 'then type and send this line:
-
-' + data.paste_this) +
-          '
-
-The agent then reads AGENT_TASK.md in your workspace and starts the recovery.');
+        const how = data.copied
+          ? 'press Ctrl+V to paste the line that was copied for you, and send it.'
+          : 'then type and send this line:\n\n' + data.paste_this;
+        alert(data.agent + ' is open, but it has not started yet.\n\nOpen its agent or chat panel, ' + how +
+          '\n\nThe agent then reads AGENT_TASK.md in your workspace and starts the recovery.');
       }
     }
 
