@@ -810,7 +810,7 @@ All 16 local recovery engines loaded and ready.
         const text = document.createElement('span');
         text.innerHTML = '<b>' + esc(a.name) + '</b> ' +
           (a.installed ? esc(a.version) + ' <span style="color:var(--text-muted)">' + esc(a.path) + '</span>' +
-             (a.can_start_with_task ? '' : ' <i>(opens empty; you paste one line)</i>')
+             (a.can_start_with_task ? '' : (a.kind === 'desktop' ? ' <i>(opens the workspace; you paste one line into its agent panel)</i>' : ' <i>(opens empty; you paste one line)</i>'))
            : '<i>not installed</i>');
         row.appendChild(radio); row.appendChild(text); box.appendChild(row);
       });

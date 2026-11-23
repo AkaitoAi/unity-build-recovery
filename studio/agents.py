@@ -1,5 +1,9 @@
 """Agent-driven recovery: find the AI coding agents installed on this PC and start one.
 
+Two kinds are known. Command-line agents get the task as their first message. Desktop apps
+and editors (the Codex desktop app, Cursor, Windsurf, VS Code, Antigravity) are opened on the
+workspace folder, and you paste the one-line first message into their agent panel yourself.
+
 The studio does not run the agent for you. It writes AGENT_TASK.md into the workspace and opens
 the agent you choose in its own console window, in that folder, with a one-line first message
 that points at the file. You stay in the loop: the agent asks you before it runs commands, as it
@@ -33,7 +37,52 @@ KNOWN_AGENTS = [
     {"id": "aider", "name": "aider", "exe": "aider", "prompt_args": None},
 ]
 
-_by_id = {a["id"]: a for a in KNOWN_AGENTS}
+LOCAL = os.environ.get("LOCALAPPDATA", "")
+PROGRAM_FILES = os.environ.get("ProgramFiles", r"C:\Program Files")
+
+# Desktop apps and editors. "exes" are names looked up on PATH; "paths" are default install
+# locations. "launch" is the argument list after the executable; {workspace} is the folder.
+DESKTOP_AGENTS = [
+    {"id": "codex-app", "name": "OpenAI Codex (desktop app)", "kind": "desktop",
+     "exes": ["codex"], "paths": [], "launch": ["app", "{workspace}"], "appx": "OpenAI.Codex"},
+    {"id": "cursor", "name": "Cursor (desktop)", "kind": "desktop", "exes": ["cursor"],
+     "paths": [os.path.join(LOCAL, "Programs", "cursor", "Cursor.exe")], "launch": ["{workspace}"]},
+    {"id": "windsurf", "name": "Windsurf (desktop)", "kind": "desktop", "exes": ["windsurf"],
+     "paths": [os.path.join(LOCAL, "Programs", "Windsurf", "Windsurf.exe")], "launch": ["{workspace}"]},
+    {"id": "vscode", "name": "VS Code (desktop)", "kind": "desktop", "exes": ["code"],
+     "paths": [os.path.join(LOCAL, "Programs", "Microsoft VS Code", "Code.exe"),
+               os.path.join(PROGRAM_FILES, "Microsoft VS Code", "Code.exe")], "launch": ["{workspace}"]},
+    {"id": "antigravity", "name": "Antigravity (desktop)", "kind": "desktop", "exes": ["antigravity"],
+     "paths": [os.path.join(LOCAL, "Programs", "antigravity", "Antigravity.exe")], "launch": ["{workspace}"]},
+]
+
+_by_id = {a["id"]: a for a in KNOWN_AGENTS + DESKTOP_AGENTS}
+
+
+def _appx_installed(package: str) -> bool:
+    """True when the Microsoft Store package is installed for this user."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-AppxPackage -Name '{package}' | Measure-Object).Count"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        return (result.stdout or "").strip() not in ("", "0")
+    except Exception:
+        return False
+
+
+def _find_desktop(agent: dict) -> str:
+    """Path of the executable that opens this desktop app, or '' when it is not installed."""
+    if agent.get("appx") and not _appx_installed(agent["appx"]):
+        return ""
+    for name in agent["exes"]:
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in agent["paths"]:
+        if os.path.isfile(path):
+            return path
+    return ""
 
 
 def _version(path: str) -> str:
@@ -50,15 +99,22 @@ def detect() -> list:
     """Every known agent, marked installed or not. The page lists installed ones first."""
     from concurrent.futures import ThreadPoolExecutor
     paths = {a["id"]: shutil.which(a["exe"]) for a in KNOWN_AGENTS}
-    with ThreadPoolExecutor(max_workers=len(KNOWN_AGENTS)) as pool:
+    with ThreadPoolExecutor(max_workers=len(KNOWN_AGENTS) + len(DESKTOP_AGENTS)) as pool:
+        desktop_paths = {a["id"]: pool.submit(_find_desktop, a) for a in DESKTOP_AGENTS}
         versions = {aid: pool.submit(_version, p) for aid, p in paths.items() if p}
         found = []
         for agent in KNOWN_AGENTS:
             path = paths[agent["id"]]
             found.append({
-                "id": agent["id"], "name": agent["name"], "installed": bool(path),
+                "id": agent["id"], "name": agent["name"], "installed": bool(path), "kind": "cli",
                 "path": path or "", "version": versions[agent["id"]].result() if path else "",
                 "can_start_with_task": agent["prompt_args"] is not None,
+            })
+        for agent in DESKTOP_AGENTS:
+            path = desktop_paths[agent["id"]].result()
+            found.append({
+                "id": agent["id"], "name": agent["name"], "installed": bool(path), "kind": "desktop",
+                "path": path, "version": "", "can_start_with_task": False,
             })
     found.sort(key=lambda a: (not a["installed"], a["name"]))
     return found
@@ -126,11 +182,12 @@ Begin with the intake and give the user a short inventory before the heavy steps
 
 
 def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
-    """Writes AGENT_TASK.md and opens the chosen agent in a new console window."""
+    """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app)."""
     agent = _by_id.get(agent_id)
     if not agent:
         raise ValueError("Unknown agent.")
-    path = shutil.which(agent["exe"])
+    desktop = agent.get("kind") == "desktop"
+    path = _find_desktop(agent) if desktop else shutil.which(agent["exe"])
     if not path:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
     os.makedirs(work_folder, exist_ok=True)
@@ -138,13 +195,16 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
     with open(task_path, "w", encoding="utf-8") as handle:
         handle.write(build_task(source, work_folder, info))
 
-    args = [path]
-    pasted = False
-    if agent["prompt_args"] is None:
-        pasted = True  # flags unknown here: open the agent empty and let the user paste the line
+    pasted = True
+    if desktop:
+        args = [path] + [part.replace("{workspace}", work_folder) for part in agent["launch"]]
+        subprocess.Popen(args, cwd=work_folder, close_fds=True)
     else:
-        args += agent["prompt_args"] + [FIRST_MESSAGE]
-    subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
-                     stdin=None, stdout=None, stderr=None)
+        args = [path]
+        if agent["prompt_args"] is not None:
+            args += agent["prompt_args"] + [FIRST_MESSAGE]
+            pasted = False  # flags for the rest are unknown here: open it empty, user pastes the line
+        subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
+                         stdin=None, stdout=None, stderr=None)
     return {"agent": agent["name"], "task_file": task_path, "workspace": work_folder,
             "paste_this": FIRST_MESSAGE if pasted else "", "started_at": time.time()}
