@@ -56,8 +56,29 @@ def inspect_game(package_path: str) -> Dict[str, Any]:
         inspect_directory(package_path, info)
     elif ext in [".xapk", ".zip", ".apk"]:
         inspect_archive_package(package_path, ext, info)
+    elif ext == ".pck":
+        info["format"] = "Godot PCK"
+        mark_godot(info, False)
+    elif ext == ".exe" and has_godot_footer(package_path):
+        info["format"] = "Windows executable with an embedded Godot PCK"
+        mark_godot(info, False)
 
     return info
+
+def has_godot_footer(path: str) -> bool:
+    """Godot exports that embed their data end with the four bytes GDPC."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(-4, os.SEEK_END)
+            return handle.read(4) == b"GDPC"
+    except OSError:
+        return False
+
+
+def mark_godot(info: Dict[str, Any], uses_dotnet: bool) -> None:
+    info["engine"] = "Godot"
+    info["backend"] = ".NET (C#) and GDScript" if uses_dotnet else "GDScript and Godot resources"
+
 
 def inspect_archive_package(archive_path: str, ext: str, info: Dict[str, Any]):
     try:
@@ -150,6 +171,12 @@ def analyze_file_list(names: List[str], z_obj: zipfile.ZipFile, info: Dict[str, 
             except Exception:
                 pass
 
+    # 6. Godot: a .pck data file or the engine library inside the package
+    if info["engine"] == "Unknown":
+        lowered = [n.lower() for n in names]
+        if any(n.endswith(".pck") for n in lowered) or any("libgodot" in n for n in lowered):
+            mark_godot(info, any("godotsharp" in n or "libmonosgen" in n for n in lowered))
+
     if info["engine"] == "Unknown":
         if any(n.endswith(".dex") for n in names):
             info["engine"] = "Native Android (Java/Kotlin)"
@@ -170,6 +197,11 @@ def inspect_directory(dir_path: str, info: Dict[str, Any]):
                 info["has_mono"] = True
                 info["engine"] = "Unity"
                 info["backend"] = "Mono"
+            elif f.lower().endswith(".pck") or f == "project.godot":
+                if info["engine"] == "Unknown":
+                    mark_godot(info, False)
+            elif f == "GodotSharp.dll":
+                mark_godot(info, True)
             elif f == "capacitor.config.json":
                 info["engine"] = "Capacitor / Web"
                 info["backend"] = "Web"

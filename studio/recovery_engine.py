@@ -123,6 +123,35 @@ class RecoveryPipeline:
         self.log(f"Size: {info.get('size_mb')} MB")
         return True
 
+    def run_stage_godot_recover(self, info: dict) -> bool:
+        """Recovers a Godot project from a PCK, EXE or APK with GDRE Tools into 05_project."""
+        self.log("--- [GODOT] Project recovery with GDRE Tools ---")
+        exe = os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe")
+        if not os.path.exists(exe):
+            raise FileNotFoundError(f"GDRE Tools not found at {exe}.")
+        source = os.path.join(self.dir_00_original, os.path.basename(self.input_file))
+        if not os.path.exists(source):
+            raise FileNotFoundError("Run the intake stage first: the original copy is missing.")
+        cmd = [exe, "--headless", f"--recover={source}", f"--output={self.dir_05_project}"]
+        self.log("Executing: " + " ".join(cmd))
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                 stdin=subprocess.DEVNULL, timeout=3600, cwd=self.work_folder)
+        except subprocess.TimeoutExpired:
+            self.log("  [GDRE] timed out after 60 minutes.")
+            return False
+        tail = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()][-25:]
+        for line in tail:
+            self.log(f"  [GDRE] {line}")
+        if res.returncode != 0:
+            self.log(f"  [GDRE] exited with code {res.returncode}: {(res.stderr or '').strip()[:300]}")
+        if not os.path.exists(os.path.join(self.dir_05_project, "project.godot")):
+            self.log("  No project.godot was written. If the log mentions encryption, the game is "
+                     "encrypted and needs its key, which the studio does not take yet.")
+            return False
+        self.log("Recovered a Godot project. Open 05_project in the Godot editor version named in the log.")
+        return True
+
     def run_stage_1_extract(self, info: dict) -> bool:
         self.log(f"--- [STAGE 1] Unpacking Package with 7-Zip ---")
         if not os.path.exists(SEVEN_ZIP):
@@ -645,7 +674,8 @@ class RecoveryPipeline:
         lines.append(f"- **Package Size**: {info.get('size_mb')} MB")
         lines.append(f"- **SHA256**: `{info.get('sha256')}`")
         lines.append(f"- **Engine**: {info.get('engine')} ({info.get('backend')})")
-        lines.append(f"- **Unity Version**: {info.get('unity_version')}")
+        if info.get("engine") == "Unity":
+            lines.append(f"- **Unity Version**: {info.get('unity_version')}")
         lines.append(f"- **ABIs**: {', '.join(info.get('abis', []))}")
         lines.append("")
         lines.append("## Stage results")

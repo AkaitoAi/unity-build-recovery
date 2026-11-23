@@ -23,11 +23,13 @@ if APP_DIR not in sys.path:
 from paths import TOOLS_ROOT
 import craft
 import agents
+import tool_needs
 from scanner import inspect_game
 from script_ai_selector import scan_and_classify_directory, export_selected_scripts, ScriptItem
 from recovery_engine import RecoveryPipeline
 from unity_playable_scaffolder import scaffold_unity_project, INSTALLED_EDITORS
 from tool_updates import check_updates, install
+import tool_updates
 
 PORT = 5899
 SESSION_TOKEN = secrets.token_urlsafe(24)
@@ -305,6 +307,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.handle_auto_playable_preset(body)
         elif path == "/api/tools/install":
             name = str(body.get("tool", ""))
+            if name not in [tool["name"] for tool in tool_updates.TOOLS]:
+                raise ValueError("Unknown tool.")
             with PIPELINE_LOCK:
                 busy = install_snapshot()["running"] or PIPELINE_STATE["running"]
                 if not busy:
@@ -359,6 +363,13 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                                        "or run Recover.ps1 on a Windows build folder."}, status=400)
             return
 
+        info = inspect_game(src)
+        missing = tool_needs.missing_tools(info)
+        if missing:
+            self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
+                            "message": "Some tools this game needs are not installed.",
+                            "stages": [], "failed": []}, status=409)
+            return
         if not acquire_run():
             self.send_json({"status": "busy", "message": "A recovery run or install is already in progress.",
                             "stages": [], "failed": []}, status=409)
@@ -366,18 +377,23 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
                      message="", results=[], log=[])
         try:
-            info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.claim_workspace(info)
 
-            stages = [
-                ("Intake", pipeline.run_stage_0_intake, [pipeline.dir_00_original]),
-                ("Unpack container", pipeline.run_stage_1_extract, [pipeline.dir_01_extracted]),
-                ("Asset rip", pipeline.run_stage_2_assets, [pipeline.dir_02_assetripper]),
-                ("Code recovery", pipeline.run_stage_3_code_recovery,
-                 [pipeline.dir_03_il2cpp, pipeline.dir_03_scripts, pipeline.dir_04_jadx]),
-                ("Rebuild Unity project", pipeline.run_stage_4_scaffold_project, [pipeline.dir_05_project]),
-            ]
+            if info.get("engine") == "Godot":
+                stages = [
+                    ("Intake", pipeline.run_stage_0_intake, [pipeline.dir_00_original]),
+                    ("Recover Godot project", pipeline.run_stage_godot_recover, [pipeline.dir_05_project]),
+                ]
+            else:
+                stages = [
+                    ("Intake", pipeline.run_stage_0_intake, [pipeline.dir_00_original]),
+                    ("Unpack container", pipeline.run_stage_1_extract, [pipeline.dir_01_extracted]),
+                    ("Asset rip", pipeline.run_stage_2_assets, [pipeline.dir_02_assetripper]),
+                    ("Code recovery", pipeline.run_stage_3_code_recovery,
+                     [pipeline.dir_03_il2cpp, pipeline.dir_03_scripts, pipeline.dir_04_jadx]),
+                    ("Rebuild Unity project", pipeline.run_stage_4_scaffold_project, [pipeline.dir_05_project]),
+                ]
 
             for name, run, folders in stages:
                 pipeline_set(stage=name, tool="")
@@ -433,6 +449,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             raise ValueError("stage must be 1 to 4")
         if not src or not os.path.isfile(src):
             raise ValueError("The package file does not exist.")
+        if inspect_game(src).get("engine") == "Godot":
+            raise ValueError("Godot games recover in one step. Use the full recovery button.")
         if not acquire_run():
             self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
             return
@@ -648,6 +666,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         tools = [
             {"name": "AssetRipper 2.x", "role": "Mesh, Texture & Scene Ripper", "path": os.path.join(TOOLS_ROOT, "AssetRipper", "AssetRipper.GUI.Free.exe")},
             {"name": "AssetStudio Mod (CLI/GUI)", "role": "Asset Bundle & CAB Inspector", "path": os.path.join(TOOLS_ROOT, "AssetStudioModCLI", "AssetStudioModCLI_net9_win64", "AssetStudioModCLI.exe")},
+            {"name": "GDRE Tools (Godot)", "role": "Godot Project Recovery", "path": os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe")},
             {"name": "Il2CppDumper", "role": "IL2CPP Symbol & DummyDll Dumper", "path": os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")},
             {"name": "Cpp2IL", "role": "AOT Binary to C# Pseudocode", "path": os.path.join(TOOLS_ROOT, "Cpp2IL", "Cpp2IL.exe")},
             {"name": "ILSpy (GUI)", "role": "Managed C# Assembly Decompiler", "path": os.path.join(TOOLS_ROOT, "ILSpy", "ILSpy.exe")},

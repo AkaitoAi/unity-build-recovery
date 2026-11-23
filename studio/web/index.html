@@ -511,7 +511,7 @@
     <div class="header-status">
       <div class="status-badge">
         <div class="pulse-dot"></div>
-        <span>ALL 16 TOOLS ONLINE (OFFLINE ISOLATED)</span>
+        <span>RUNS LOCALLY</span>
       </div>
       <button class="btn btn-purple" onclick="openReconstructedInUnity()">🎮 Open in Unity Editor</button>
     </div>
@@ -523,7 +523,7 @@
     <button class="nav-btn" onclick="switchNav('scripts')">🧠 AI Semantic Script Studio</button>
     <button class="nav-btn" onclick="switchNav('agent')">🤖 Agent Recovery</button>
     <button class="nav-btn" onclick="switchNav('craft')">✨ Craft Anything</button>
-    <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health (16/16)</button>
+    <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health</button>
     <button class="nav-btn" onclick="switchNav('console')">📜 Live Diagnostic Console</button>
   </nav>
 
@@ -535,7 +535,7 @@
       <div class="card">
         <div class="card-title">
           <span>📁 Game Intake & Work Workspace</span>
-          <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Supports APK, XAPK and ZIP (use Recover.ps1 for Windows build folders)</span>
+          <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Unity and Godot: APK, XAPK, ZIP, PCK or EXE (use Recover.ps1 for Windows build folders)</span>
         </div>
         <div class="input-row">
           <div class="input-label">Game Package:</div>
@@ -770,7 +770,7 @@
         </div>
         <div class="console-box" id="console-log">
 [SYSTEM INITIALIZED] AETHER RECON STUDIO — Offline Edition
-All 16 local recovery engines loaded and ready.
+Local recovery tools are listed on the Tools tab.
         </div>
       </div>
     </div>
@@ -926,6 +926,54 @@ All 16 local recovery engines loaded and ready.
     }
 
     // Pipeline Execution
+    // Tools a game needs but that are not installed. Nothing is downloaded unless the user agrees
+    // to the exact files shown; the server then checks each download against its published SHA-256.
+    function describeTool(t) {
+      return '- ' + t.name + (t.version ? ' ' + t.version : '') + (t.size_mb ? ' (' + t.size_mb + ' MB)' : '') +
+        '\n    from ' + t.url + (t.sha256 ? '\n    SHA-256 ' + t.sha256 : '');
+    }
+
+    function installAndWait(name) {
+      return new Promise(async (resolve) => {
+        try {
+          const res = await fetch('/api/tools/install', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ tool: name })
+          });
+          const started = await res.json();
+          if (started.status === 'busy') { logMessage(name + ': ' + started.message); return resolve(false); }
+        } catch (e) { logMessage('[ERROR] ' + name + ': ' + e); return resolve(false); }
+        const poll = setInterval(async () => {
+          try {
+            const st = await (await fetch('/api/tools/install/status')).json();
+            logMessage('Installing ' + name + ': ' + (st.message || '') + ' ' + (st.percent || 0) + '%');
+            if (!st.running) {
+              clearInterval(poll);
+              if (st.error) { logMessage('[ERROR] ' + name + ': ' + st.error); resolve(false); }
+              else { logMessage(name + ' installed.'); resolve(true); }
+            }
+          } catch (e) { clearInterval(poll); resolve(false); }
+        }, 1000);
+      });
+    }
+
+    async function ensureTools(out) {
+      const tools = out.tools || [];
+      const byHand = tools.filter(t => t.manual || !t.can_install);
+      if (byHand.length) {
+        alert('This ' + out.engine + ' game needs tools the studio cannot download for you:\n\n' +
+          byHand.map(t => '- ' + t.name + ': ' + (t.note || '') + (t.release_url || t.url ? '\n    ' + (t.release_url || t.url) : '')).join('\n') +
+          '\n\nInstall them, then run the recovery again.');
+        return false;
+      }
+      const ok = confirm('This ' + out.engine + ' game needs tools that are not installed yet:\n\n' +
+        tools.map(describeTool).join('\n\n') +
+        '\n\nThe studio will download these files from the addresses above, check each against the SHA-256 shown, ' +
+        'and install them in your tools folder. Download now?');
+      if (!ok) return false;
+      for (const t of tools) { if (!(await installAndWait(t.name))) return false; }
+      return true;
+    }
+
     async function runFullPipeline() {
       const src = document.getElementById('input-source').value.trim();
       const dest = document.getElementById('input-work').value.trim();
@@ -941,12 +989,25 @@ All 16 local recovery engines loaded and ready.
       logMessage('==================================================');
 
       try {
-        const res = await fetch('/api/pipeline/start', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ source: src, destination: dest })
-        });
-        const out = await res.json();
+        const startRun = async () => {
+          const res = await fetch('/api/pipeline/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ source: src, destination: dest })
+          });
+          return await res.json();
+        };
+        let out = await startRun();
+        if (out.status === 'needs_tools') {
+          stopPipelineWatch();
+          const approved = await ensureTools(out);
+          if (!approved) {
+            logMessage('Recovery not started: the required tools are missing.');
+            return;
+          }
+          startPipelineWatch();
+          out = await startRun();
+        }
         stopPipelineWatch();
         setActiveTool('', '');
         document.getElementById('prog-fill').style.width = '100%';

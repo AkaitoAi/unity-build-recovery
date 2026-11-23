@@ -41,6 +41,13 @@ TOOLS = [
         "role": "Rips Unity assets, scenes and materials",
     },
     {
+        "name": "GDRE Tools", "repo": "GDRETools/gdsdecomp",
+        "marker": os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe"),
+        "role": "Recovers Godot projects from PCK, EXE and APK files",
+        "asset_pattern": r"^GDRE_tools-v[\d.]+-windows\.zip$",
+        "stable_only": True,
+    },
+    {
         "name": "Il2CppDumper", "repo": "Perfare/Il2CppDumper",
         "marker": os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe"),
         "role": "Recovers C# type information from IL2CPP builds",
@@ -174,13 +181,18 @@ def _newest_npm(package):
     }
 
 
-def _newest_release(repo, asset_pattern=None):
-    """Newest published build including pre-releases, with its Windows download."""
+def _newest_release(repo, asset_pattern=None, stable_only=False):
+    """Newest published build, with its Windows download.
+
+    Pre-releases count unless stable_only is set. A release without a matching download is
+    skipped in favour of the next newest one that has it.
+    """
     releases = _api(f"https://api.github.com/repos/{repo}/releases?per_page=20")
     if not releases:
         raise RuntimeError("no releases published")
     releases.sort(key=lambda r: r.get("published_at") or "", reverse=True)
-    newest = releases[0]
+    if stable_only:
+        releases = [r for r in releases if not r.get("prerelease") and not r.get("draft")] or releases
 
     def score(asset):
         name = asset.get("name", "").lower()
@@ -196,9 +208,21 @@ def _newest_release(repo, asset_pattern=None):
         return points
 
     import re as _re
-    assets = [a for a in newest.get("assets", [])
-              if score(a) > 0 and (not asset_pattern or _re.match(asset_pattern, a.get("name", "")))]
-    assets.sort(key=score, reverse=True)
+
+    def matching(release):
+        found = [a for a in release.get("assets", [])
+                 if score(a) > 0 and (not asset_pattern or _re.match(asset_pattern, a.get("name", "")))]
+        found.sort(key=score, reverse=True)
+        return found
+
+    newest = releases[0]
+    assets = matching(newest)
+    if not assets:
+        for candidate in releases[1:]:
+            found = matching(candidate)
+            if found:
+                newest, assets = candidate, found
+                break
     return {
         "tag": newest.get("tag_name") or "?",
         "published": (newest.get("published_at") or "")[:10],
@@ -206,6 +230,7 @@ def _newest_release(repo, asset_pattern=None):
         "prerelease": bool(newest.get("prerelease")),
         "download": assets[0]["browser_download_url"] if assets else "",
         "download_name": assets[0]["name"] if assets else "",
+        "size_mb": round(assets[0].get("size", 0) / 1e6, 1) if assets else 0,
         "sha256": (assets[0].get("digest") or "").removeprefix("sha256:").lower() if assets else "",
     }
 
@@ -240,7 +265,7 @@ def check_updates(force=False):
             latest = cached["release"]
         else:
             try:
-                latest = _newest_npm(tool["npm"]) if tool.get("npm") else _newest_release(tool["repo"], tool.get("asset_pattern"))
+                latest = _newest_npm(tool["npm"]) if tool.get("npm") else _newest_release(tool["repo"], tool.get("asset_pattern"), tool.get("stable_only", False))
                 cache[tool["repo"]] = {"checked_at": now, "release": latest}
             except urllib.error.HTTPError as error:
                 if error.code in (403, 429) and cached:
@@ -368,7 +393,7 @@ def install(name, progress=None):
         return _install_npm(tool, report)
 
     report(2, f"Looking up the newest {tool['name']}...")
-    latest = _newest_release(tool["repo"], tool.get("asset_pattern"))
+    latest = _newest_release(tool["repo"], tool.get("asset_pattern"), tool.get("stable_only", False))
     url = latest.get("download")
     if not url:
         raise RuntimeError(f"{tool['name']} {latest['tag']} publishes no Windows download; "
@@ -421,8 +446,19 @@ def install(name, progress=None):
                     if not os.path.realpath(os.path.join(base, member)).startswith(base + os.sep):
                         raise RuntimeError(f"unsafe path in archive: {member}")
                 archive.extractall(partial)
+            marker_name = os.path.basename(tool.get("marker", "")).lower()
+            if _fixed_location(tool) and marker_name:
+                # Some releases nest the tool one or two folders deep: use the folder that holds it.
+                for walk_root, _dirs, walk_files in os.walk(partial):
+                    if marker_name in [f.lower() for f in walk_files]:
+                        if os.path.realpath(walk_root) != os.path.realpath(partial):
+                            flat = partial + ".flat"
+                            os.replace(walk_root, flat)
+                            shutil.rmtree(partial, ignore_errors=True)
+                            partial = flat
+                        break
             entries = os.listdir(partial)
-            if len(entries) == 1 and os.path.isdir(os.path.join(partial, entries[0])):
+            if len(entries) == 1 and os.path.isdir(os.path.join(partial, entries[0])) and not _fixed_location(tool):
                 inner = os.path.join(partial, entries[0])  # release zips wrap everything in one folder
                 flat = partial + ".flat"
                 os.replace(inner, flat)
