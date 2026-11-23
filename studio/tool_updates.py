@@ -24,6 +24,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -235,6 +236,25 @@ def _newest_release(repo, asset_pattern=None, stable_only=False):
     }
 
 
+MAX_DOWNLOAD_BYTES = 2 * 10 ** 9
+_GITHUB_HOST = re.compile(r"^(github\.com|([a-z0-9-]+\.)*githubusercontent\.com)$")
+
+
+class _GithubOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """A release download may be handed to GitHub's storage hosts, and nowhere else, over https."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parts = urllib.parse.urlparse(newurl)
+        if parts.scheme != "https" or not _GITHUB_HOST.match((parts.hostname or "").lower()):
+            raise RuntimeError(f"The download was redirected to {parts.hostname or newurl}, which is not a GitHub "
+                               "address; nothing was installed.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _github_opener():
+    return urllib.request.build_opener(_GithubOnlyRedirects)
+
+
 def _fixed_location(tool):
     """True when the pipeline reads the tool from one fixed folder and ignores newer installs."""
     return not (tool.get("npm") or tool.get("newest_file_in") or tool.get("newest_dir_prefix"))
@@ -362,10 +382,21 @@ def _install_npm(tool, report, approved=None):
     pinned = (approved or {}).get("version", "").lstrip("v")
     if not re.match(r"^\d+\.\d+\.\d+([-+.][0-9A-Za-z.]+)?$", pinned):
         raise RuntimeError("Nothing was installed: the npm version to install was not approved.")
+    # The approval must be for what npm publishes now, not any version string a caller supplies.
+    latest = _newest_npm(tool["npm"])["npm_version"]
+    if pinned != latest:
+        raise RuntimeError(f"The newest {tool['npm']} is now {latest}, not the {pinned} you approved. "
+                           "Nothing was installed; check again and approve the new one.")
     report(10, f"Installing {tool['npm']}@{pinned} with npm (this can take a few minutes)...")
+    # Always the public registry, with no user or project npm config that could point elsewhere.
+    empty_config = os.path.join(folder, ".studio-empty-npmrc")
+    open(empty_config, "w").close()
+    environment = {k: v for k, v in os.environ.items() if not k.lower().startswith("npm_config_")}
     result = subprocess.run(
-        [npm, "install", f"{tool['npm']}@{pinned}", "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
-        cwd=folder, capture_output=True, text=True, errors="replace", timeout=2700)
+        [npm, "install", f"{tool['npm']}@{pinned}", "--registry", "https://registry.npmjs.org/",
+         "--userconfig", empty_config, "--globalconfig", empty_config,
+         "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
+        cwd=folder, capture_output=True, text=True, errors="replace", timeout=2700, env=environment)
     if result.returncode != 0:
         for name, data in backup.items():  # keep the manifest of the working install
             with open(os.path.join(folder, name), "wb") as handle:
@@ -376,6 +407,8 @@ def _install_npm(tool, report, approved=None):
     report(95, "Reading the installed version...")
     package = os.path.join(folder, "node_modules", tool["npm"], "package.json")
     version = json.load(open(package, encoding="utf-8")).get("version", "?") if os.path.exists(package) else "?"
+    if version != pinned:
+        raise RuntimeError(f"npm finished but {tool['npm']} is version {version}, not the approved {pinned}.")
     report(100, f"{tool['name']} {version} installed")
     return {"tool": tool["name"], "version": version, "path": folder, "size_mb": 0}
 
@@ -424,8 +457,11 @@ def install(name, progress=None, approved=None):
     request = urllib.request.Request(url, headers={"User-Agent": "aether-recon-studio"})
     chunks = []
     began = time.time()
-    with urllib.request.urlopen(request, timeout=900) as response:
+    with _github_opener().open(request, timeout=900) as response:
         total = int(response.headers.get("Content-Length") or 0)
+        if total > MAX_DOWNLOAD_BYTES:
+            raise RuntimeError(f"The download is {total / 1e9:.1f} GB, more than the {MAX_DOWNLOAD_BYTES // 10**9} GB "
+                               "limit; nothing was installed.")
         got = 0
         while True:
             chunk = response.read(262144)
@@ -433,6 +469,8 @@ def install(name, progress=None, approved=None):
                 break
             chunks.append(chunk)
             got += len(chunk)
+            if got > MAX_DOWNLOAD_BYTES:
+                raise RuntimeError("The download is larger than the limit; nothing was installed.")
             speed = got / max(time.time() - began, 0.001)
             if total:
                 left = (total - got) / max(speed, 1)

@@ -35,8 +35,7 @@ def required_tools(info: dict) -> list:
 def _il2cpp_tool_present() -> bool:
     if os.path.exists(os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")):
         return True
-    folder = os.path.join(TOOLS_ROOT, "Cpp2IL")
-    return os.path.isdir(folder) and any(f.lower().endswith(".exe") for f in os.listdir(folder))
+    return _cpp2il_present()
 
 
 def _present(name: str) -> bool:
@@ -44,8 +43,19 @@ def _present(name: str) -> bool:
         return os.path.exists(SEVEN_ZIP)
     if name == "REA":
         return bool(rea_support.find_rea())  # the package and Node.js must both be there
+    if name == "Cpp2IL":
+        return _cpp2il_present()
     tool = _tool(name)
     return bool(tool and os.path.exists(tool["marker"]))
+
+
+def _cpp2il_present() -> bool:
+    """Cpp2IL lives in a folder of builds. An empty folder (or one with only notes) is not installed."""
+    folder = os.path.join(TOOLS_ROOT, "Cpp2IL")
+    try:
+        return any(f.lower().endswith(".exe") for f in os.listdir(folder))
+    except OSError:
+        return False
 
 
 def describe(name: str) -> dict:
@@ -88,8 +98,19 @@ def describe(name: str) -> dict:
 def missing_tools(info: dict, extra=()) -> list:
     """Details for every required tool that is not installed yet. `extra` names optional tools
     the user asked for (for example REA)."""
+    needs = required_tools(info) + [{"tool": name} for name in extra]
+    return _missing(needs)
+
+
+def missing_named(names) -> list:
+    """Like missing_tools, for tools named directly (a single stage needs only its own tool,
+    whatever engine the scanner thought the package was)."""
+    return _missing([{"tool": n, "manual": n == "7-Zip"} for n in names])
+
+
+def _missing(needs: list) -> list:
     out = []
-    for need in required_tools(info) + [{"tool": name} for name in extra]:
+    for need in needs:
         name = need["tool"]
         if _present(name):
             continue

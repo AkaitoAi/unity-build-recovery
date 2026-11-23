@@ -36,7 +36,7 @@ try {
   Invoke-WebRequest "$base/Reset" -Method Post -UseBasicParsing -MaximumRedirection 5 | Out-Null
   $loadEp = if (Test-Path -LiteralPath $InputPath -PathType Container) { '/LoadFolder' } else { '/LoadFile' }
   Write-Host "Loading $InputPath via $loadEp"
-  Invoke-WebRequest "$base$loadEp" -Method Post -Body @{ path = $InputPath } -UseBasicParsing -TimeoutSec 3600 -MaximumRedirection 5 | Out-Null
+  Invoke-WebRequest "$base$loadEp" -Method Post -Body @{ path = $InputPath } -UseBasicParsing -TimeoutSec 1200 -MaximumRedirection 5 | Out-Null
   Write-Host "Exporting ($Mode) to $OutputPath"
   Invoke-WebRequest "$base/Export/$Mode" -Method Post -Body @{ path = $OutputPath } -UseBasicParsing -TimeoutSec ($ExportTimeoutMin * 60) -MaximumRedirection 5 | Out-Null
   $n = (Get-ChildItem -LiteralPath $OutputPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count

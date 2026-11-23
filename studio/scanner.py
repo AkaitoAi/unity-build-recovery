@@ -186,6 +186,18 @@ def analyze_file_list(names: List[str], z_obj: zipfile.ZipFile, info: Dict[str, 
             info["backend"] = "Dalvik / ART Bytecode"
 
 def inspect_directory(dir_path: str, info: Dict[str, Any]):
+    # A folder has no file hash. This one covers every file's relative path and size, so the
+    # workspace marker is never empty and changes when the folder's contents do.
+    listing = []
+    for root, dirs, files in os.walk(dir_path):
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                listing.append(f"{os.path.relpath(p, dir_path)}\0{os.path.getsize(p)}")
+            except OSError:
+                listing.append(f"{os.path.relpath(p, dir_path)}\0?")
+    info["sha256"] = hashlib.sha256("\n".join(sorted(listing)).encode("utf-8", "replace")).hexdigest()
+    info["total_files"] = len(listing)
     for root, dirs, files in os.walk(dir_path):
         for f in files:
             p = os.path.join(root, f)

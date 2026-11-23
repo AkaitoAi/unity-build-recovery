@@ -26,3 +26,9 @@ try:
     os.makedirs(TOOLS_ROOT, exist_ok=True)  # a fresh clone has no .tools folder yet
 except OSError:
     pass
+
+
+# Where the server leaves the one-use nonce its launcher opens the page with. It sits in this
+# user's profile, so another Windows account cannot read it.
+NONCE_PATH = os.environ.get("STUDIO_NONCE_FILE") or os.path.join(
+    os.environ.get("LOCALAPPDATA", APP_DIR), "AetherReconStudio", "launch-nonce.txt")

@@ -95,6 +95,20 @@ def studio_environment():
     return env
 
 
+def launch_url():
+    """The address to open: the page plus the server's one-use launch nonce, read from this
+    user's profile. Without it the server shows only a note saying to use the launcher."""
+    try:
+        from paths import NONCE_PATH
+        with open(NONCE_PATH, "r", encoding="ascii") as handle:
+            nonce = handle.read().strip()
+        if nonce:
+            return URL + "?n=" + nonce
+    except Exception:
+        pass
+    return URL
+
+
 def server_is_up():
     """True when something is already serving the studio on the loopback port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -155,7 +169,7 @@ def show_window(engine):
     started = time.time()
     subprocess.call([
         engine,
-        "--app=" + URL,
+        "--app=" + launch_url(),
         "--user-data-dir=" + profile,
         "--window-size=" + WINDOW_SIZE,
         "--no-first-run",
@@ -178,7 +192,7 @@ def main():
         engine = find_window_engine()
         if not engine:
             # No Chrome or Edge: fall back to whatever browser the system uses.
-            webbrowser.open(URL)
+            webbrowser.open(launch_url())
             own_server = False  # nothing here tracks that window, so leave the server up
             return 0
 

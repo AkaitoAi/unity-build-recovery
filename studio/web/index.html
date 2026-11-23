@@ -767,6 +767,10 @@
           <span>Give the agent <b>REA</b>, a static reverse-engineering toolkit (native code, IL2CPP metadata, .NET, APKs).
             <span id="rea-status" style="color:var(--text-muted);"></span></span>
         </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 0;font-size:12px;">
+          <input type="checkbox" id="agent-copy" checked>
+          <span>Copy the recovery prompt to my clipboard when the agent opens (replaces what is on the clipboard now).</span>
+        </label>
         <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0;font-size:12px;">
           <input type="checkbox" id="agent-confirm">
           <span>I understand the selected agent will read this package and the recovered files and send them to its provider, and I may share them.</span>
@@ -776,6 +780,7 @@
           <button class="btn" onclick="switchNavTo('wizard'); document.getElementById('audit-target').value='06_playable'; auditRun();">Audit the agent's 06_playable</button>
           <span id="agent-status" style="font-size:12px;color:var(--text-muted);"></span>
         </div>
+        <div id="agent-held" style="display:none;margin-top:10px;font-size:12px;"></div>
       </div>
     </div>
 
@@ -799,6 +804,11 @@
           </div>
           <label>Task</label>
           <textarea id="craft-task" class="input-field" rows="4" maxlength="4000" placeholder="Implement a pause menu with Resume and Quit. Toggle with Escape and restore the previous time scale when closed."></textarea>
+          <label>Work on</label>
+          <select id="craft-source" class="input-field" style="width:260px;">
+            <option value="05_project">05_project (the rebuilt project)</option>
+            <option value="06_playable">06_playable (the agent's repaired copy)</option>
+          </select>
           <label>Refinement rounds</label>
           <input type="number" id="craft-rounds" class="input-field" value="2" min="0" max="5" style="width:90px;">
         </div>
@@ -889,7 +899,8 @@ Local recovery tools are listed on the Tools tab.
         const r = await fetch('/api/agents/launch', {method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({agent: chosen.value, source: src, destination: dest,
                                 confirm_send: document.getElementById('agent-confirm').checked,
-                                use_rea: document.getElementById('agent-rea').checked})});
+                                use_rea: document.getElementById('agent-rea').checked,
+                                copy_prompt: document.getElementById('agent-copy').checked})});
         return {res: r, data: await r.json()};
       };
       let {res, data} = await launchRequest();
@@ -902,19 +913,37 @@ Local recovery tools are listed on the Tools tab.
       if (!res.ok) { status.innerText = ''; return alert(data.message || 'Could not start.'); }
       const kind = data.copy_is_prompt ? 'the recovery prompt for this game (' + data.copy_chars + ' characters)'
                                        : 'the path of the task file';
-      status.innerText = data.agent + ' opened. Task file: ' + data.task_file +
+      status.innerText = data.agent + ' opened. Task file: ' + data.task_file + ' While it works here, the studio will not run stages in this workspace; press "Agent finished" when it is done.' +
         (data.rea === 'mcp' ? '  REA is connected to the agent as tools.'
           : (data.rea === 'cli' ? '  REA is described in the prompt; the agent runs it from the shell.' : '')) +
-        (data.copied ? '  Copied to your clipboard: ' + kind + '.'
-                     : '  Could not copy to the clipboard. Paste the contents of the task file instead.');
+        (!document.getElementById('agent-copy').checked ? '  Nothing was copied to the clipboard; open the task file to read the prompt.'
+          : (data.copied ? '  Copied to your clipboard: ' + kind + '.'
+                         : '  Could not copy to the clipboard. Paste the contents of the task file instead.'));
       if (data.paste_this) {
-        const how = data.copied
+        const how = data.copied && document.getElementById('agent-copy').checked
           ? 'press Ctrl+V to paste ' + kind + ' that was copied for you, and send it.'
           : 'then open ' + data.task_file + ', copy its contents, and send them.';
         alert(data.agent + ' is open, but it has not started yet.\n\nOpen its agent or chat panel, ' + how +
           '\n\nThe prompt tells the agent to work through every step without asking questions. ' +
           'It will still ask you to approve commands unless you have turned that off in the agent itself.');
       }
+    }
+
+    async function agentRelease() {
+      const work = document.getElementById('input-work').value.trim();
+      if (!work) return;
+      await fetch('/api/agents/release', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({work_folder: work})});
+    }
+    function renderHeldAgents(list) {
+      const box = document.getElementById('agent-held');
+      if (!box) return;
+      if (!list || !list.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+      box.style.display = 'block';
+      box.innerHTML = list.map(a => '<div style="padding:8px;border:1px solid var(--accent-amber);border-radius:6px;margin-top:6px;">' +
+        '<b>' + esc(a.agent) + '</b> is working in <code>' + esc(a.workspace) + '</code>. The studio will not run stages, audits, ' +
+        'installs or Craft Anything there until it finishes' + (a.manual ? ' (a desktop app cannot be watched, so tell the studio).' : ' (closing its window also releases it).') +
+        ' <button class="btn" onclick="agentRelease()">Agent finished</button></div>').join('');
     }
 
     // ---- Craft Anything ----
@@ -944,6 +973,7 @@ Local recovery tools are listed on the Tools tab.
         work_folder: work, task: document.getElementById('craft-task').value,
         backend: document.getElementById('craft-agent').value, cli: craftCli(),
         rounds: parseInt(document.getElementById('craft-rounds').value, 10),
+        source: document.getElementById('craft-source').value,
         confirm_send: document.getElementById('craft-confirm').checked
       };
       const res = await fetch('/api/craft/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -1077,6 +1107,9 @@ Local recovery tools are listed on the Tools tab.
         const a = await (await fetch('/api/activity')).json();
         const now = a.now, rows = [], recent = 15;
         const p = a.pipeline, ins = a.install, cr = a.craft;
+        renderHeldAgents(a.agents);
+        (a.agents || []).forEach(ag => rows.push(activityRow('run', ag.agent + ' is working in a workspace', null,
+          ag.workspace, fmtTime(now - ag.started))));
         p.now_stage_elapsed = now - (p.stage_started_at || now);
         renderStepper(p);
         const fill = document.getElementById('prog-fill');
@@ -1290,12 +1323,19 @@ Local recovery tools are listed on the Tools tab.
       if (!src || !dest) return alert('Choose the package and a workspace folder first.');
       logMessage(`Executing Stage ${stageNum}...`);
       try {
-        const res = await fetch('/api/pipeline/stage', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ source: src, destination: dest, stage: stageNum })
-        });
-        const data = await res.json();
+        const send = async () => {
+          const r = await fetch('/api/pipeline/stage', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ source: src, destination: dest, stage: stageNum })
+          });
+          return {res: r, data: await r.json()};
+        };
+        let {res, data} = await send();
+        if (data.status === 'needs_tools') {
+          if (!(await ensureTools(data))) { logMessage(`Stage ${stageNum} not started: the required tools are missing.`); return; }
+          ({res, data} = await send());
+        }
         if (!res.ok || data.status === 'error') logMessage(`Stage ${stageNum} failed: ${data.message || res.status}`);
         else if (data.status === 'empty') logMessage(`Stage ${stageNum} wrote no files. ${data.message}`);
         else logMessage(`Stage ${stageNum} completed.`);
@@ -1441,12 +1481,20 @@ Local recovery tools are listed on the Tools tab.
     async function openReconstructedInUnity() {
       const dest = document.getElementById('input-work').value.trim();
       if (!dest) return alert('Choose a workspace folder first.');
-      logMessage('Launching Unity Editor on ' + dest + '/05_project...');
-      await fetch('/api/open-unity', {
+      const answer = prompt('Open which folder in Unity? Type 05_project (the rebuilt project) or 06_playable (the repaired copy).', '05_project');
+      if (answer === null) return;
+      const target = answer.trim();
+      if (target !== '05_project' && target !== '06_playable') return alert('Type 05_project or 06_playable.');
+      if (!confirm('Opening ' + target + ' makes Unity compile its scripts. That runs code from the recovered game inside the editor on this PC.\n\nOpen it?')) return;
+      logMessage('Launching Unity Editor on ' + dest + '/' + target + '...');
+      const res = await fetch('/api/open-unity', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ work_folder: dest })
+        body: JSON.stringify({ work_folder: dest, target: target, confirm_run_code: true })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { logMessage('Unity was not opened: ' + (data.message || res.status)); alert(data.message || 'Unity was not opened.'); }
+      else logMessage('Unity ' + (data.version || '') + ' is opening ' + target + '.');
     }
 
     // ---- Live view of the running pipeline -------------------------------------------

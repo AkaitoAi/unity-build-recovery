@@ -234,13 +234,21 @@ def setup_playable_web_runner(output_dir: str, web_dir: str, game_title: str) ->
     safe_title = re.sub(r"[^A-Za-z0-9 ._-]", "", game_title or "game")[:60] or "game"
     folder = os.path.basename(os.path.normpath(web_dir))
     runner_bat = os.path.join(output_dir, "Play_Game_Offline.bat")
+    # Never "cd" into the game folder or search PATH for python: cmd.exe looks in the current
+    # folder first, so a python.exe inside a recovered game would run instead of Python. The
+    # interpreter is the studio's own, by full path, and the game folder is only passed to it
+    # as the directory to serve.
+    python = os.path.join(os.path.dirname(sys.executable), "python.exe")
+    if not (os.path.isfile(python) and python.isascii() and not any(c in python for c in '%"^&|<>!')):
+        python = ""
+    interpreter = f'"{python}"' if python else '"%SystemRoot%\\py.exe" -3'
     code = (
         "@echo off\r\n"
         f"title Playing {safe_title}\r\n"
-        f'cd /d "%~dp0{folder}"\r\n'
+        'cd /d "%SystemRoot%"\r\n'
         "echo Serving on http://127.0.0.1:8088 (close this window to stop)\r\n"
         'start "" "http://127.0.0.1:8088"\r\n'
-        "python -m http.server 8088 --bind 127.0.0.1\r\n"
+        f'{interpreter} -m http.server 8088 --bind 127.0.0.1 --directory "%~dp0{folder}"\r\n'
         "pause\r\n"
     )
     with open(runner_bat, "w", encoding="ascii", newline="") as f:
