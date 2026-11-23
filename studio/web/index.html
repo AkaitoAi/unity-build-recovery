@@ -711,6 +711,11 @@
           what the agent reads goes to its provider. The package and workspace come from the Recovery tab (Windows build folders work here).
         </p>
         <div id="agent-list" style="display:flex;flex-direction:column;gap:6px;font-size:13px;">Press "Detect agents".</div>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 0;font-size:12px;">
+          <input type="checkbox" id="agent-rea">
+          <span>Give the agent <b>REA</b>, a static reverse-engineering toolkit (native code, IL2CPP metadata, .NET, APKs).
+            <span id="rea-status" style="color:var(--text-muted);"></span></span>
+        </label>
         <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0;font-size:12px;">
           <input type="checkbox" id="agent-confirm">
           <span>I understand the selected agent will read this package and the recovered files and send them to its provider, and I may share them.</span>
@@ -801,6 +806,10 @@ Local recovery tools are listed on the Tools tab.
       const res = await fetch('/api/agents');
       const data = await res.json();
       box.innerHTML = '';
+      const reaInfo = data.rea || {};
+      document.getElementById('rea-status').innerText = reaInfo.installed
+        ? 'REA ' + (reaInfo.version || '') + ' is installed.'
+        : 'Not installed. Ticking this asks before installing it with npm' + (reaInfo.node_found ? '.' : ' (Node.js was not found).');
       (data.agents || []).forEach((a, i) => {
         const row = document.createElement('label');
         row.style.cssText = 'display:flex;gap:10px;align-items:center;' + (a.installed ? '' : 'opacity:.45;');
@@ -825,7 +834,8 @@ Local recovery tools are listed on the Tools tab.
       const launchRequest = async () => {
         const r = await fetch('/api/agents/launch', {method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({agent: chosen.value, source: src, destination: dest,
-                                confirm_send: document.getElementById('agent-confirm').checked})});
+                                confirm_send: document.getElementById('agent-confirm').checked,
+                                use_rea: document.getElementById('agent-rea').checked})});
         return {res: r, data: await r.json()};
       };
       let {res, data} = await launchRequest();
@@ -839,6 +849,8 @@ Local recovery tools are listed on the Tools tab.
       const kind = data.copy_is_prompt ? 'the recovery prompt for this game (' + data.copy_chars + ' characters)'
                                        : 'the path of the task file';
       status.innerText = data.agent + ' opened. Task file: ' + data.task_file +
+        (data.rea === 'mcp' ? '  REA is connected to the agent as tools.'
+          : (data.rea === 'cli' ? '  REA is described in the prompt; the agent runs it from the shell.' : '')) +
         (data.copied ? '  Copied to your clipboard: ' + kind + '.'
                      : '  Could not copy to the clipboard. Paste the contents of the task file instead.');
       if (data.paste_this) {

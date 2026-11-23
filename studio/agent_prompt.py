@@ -157,7 +157,54 @@ Tools you have:
 """
 
 
-def build_prompt(source: str, work: str, info: dict) -> str:
+def _rea_section(info: dict, rea: dict, via_mcp: bool) -> str:
+    """Tells the agent how to use REA, and which commands suit this game. Static analysis only."""
+    engine = info.get("engine", "")
+    hints = []
+    if engine == "Unity" and info.get("has_il2cpp"):
+        hints += [
+            "`inspect-il2cpp-metadata <global-metadata.dat>`: names, owners and string literals from the IL2CPP metadata.",
+            "`inspect-artifact <libil2cpp.so or GameAssembly.dll>`, then `analyze` or `decompile-all` on the native "
+            "binary when Ghidra is available: use it to fill gaps in Il2CppDumper's `dump.cs`.",
+        ]
+    elif engine == "Unity":
+        hints += [
+            "`inspect-managed-artifact <Assembly-CSharp.dll>` and `inspect-managed-members <Assembly-CSharp.dll>`: "
+            "members, signatures and string literals; compare with the ILSpy output.",
+        ]
+    elif engine == "Godot":
+        hints += ["`inspect-artifact <file>` for any native extension (`.dll` or `.so`) in the package. Scripts and "
+                  "resources are GDRE Tools' job, not REA's."]
+    else:
+        hints += ["`inspect-artifact <main binary>` and `analyze <path>` to learn what the game is built with."]
+    hints += [
+        "For Android packages: `inspect-android-package <apk>`, `inspect-android-class`, `inspect-android-method` and "
+        "`decode-android-resources`.",
+        "For JavaScript or web-based games: `analyze-javascript-application <folder>`.",
+    ]
+    how = (
+        "REA is also connected to you as MCP tools (server name `rea`). Use those tools when your tool list shows "
+        "them, and fall back to the command line below if not."
+        if via_mcp else
+        "Run REA from the command line."
+    )
+    cli = f'"{rea["node"]}" "{rea["script"]}"'
+    return f"""## REA toolkit (extra static reverse-engineering tools)
+
+REA {rea.get('version', '')} is installed. {how}
+
+- Command line: `{cli} <command> [options]`. Run `<command> --help` before using a command you have not used.
+- Start with `{cli} doctor` once, and read `{cli} guidance` for its workflow notes. If an analysis engine it needs
+  (for example Ghidra) is missing, skip that command, say so in the report, and never install anything.
+- **Static analysis only.** Never use REA commands that launch, run, attach to or debug the game or any other
+  program (anything starting with `capture-` or `debug-`, or that runs a target). Game code is untrusted.
+- Write large output to `reports\\rea\\` (most commands can save their result) and summarise it; do not paste it.
+
+Commands that suit this game:
+""" + "\n".join(f"- {h}" for h in hints) + "\n\n"
+
+
+def build_prompt(source: str, work: str, info: dict, rea: dict = None, rea_via_mcp: bool = False) -> str:
     engine = info.get("engine", "")
     if engine == "Unity":
         plan = _unity_plan(source, work, info)
@@ -165,6 +212,7 @@ def build_prompt(source: str, work: str, info: dict) -> str:
         plan = _godot_plan(source, work, info)
     else:
         plan = _other_plan(source, work, info)
+    rea_block = _rea_section(info, rea, rea_via_mcp) if rea else ""
 
     return f"""# Recover this game: work through every step without asking me anything
 
@@ -199,7 +247,7 @@ You are the recovery engineer for one game, working alone. The user is not watch
 4. Never modify the original package.
 
 {plan}
-## Final report
+{rea_block}## Final report
 
 Write `reports\\RECOVERY_REPORT.md` with: the result in one line (complete, partial or blocked); each step and
 whether it worked, with the command used and the file counts; what is exact, what is a stub or approximation,
