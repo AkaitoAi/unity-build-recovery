@@ -32,3 +32,16 @@ except OSError:
 # user's profile, so another Windows account cannot read it.
 NONCE_PATH = os.environ.get("STUDIO_NONCE_FILE") or os.path.join(
     os.environ.get("LOCALAPPDATA", APP_DIR), "AetherReconStudio", "launch-nonce.txt")
+
+# Server log folder (rotating studio.log). Kept out of the source tree.
+LOG_DIR = os.environ.get("STUDIO_LOG_DIR") or os.path.join(
+    os.environ.get("LOCALAPPDATA", APP_DIR), "AetherReconStudio", "logs")
+
+
+def studio_version() -> str:
+    """The version in studio/VERSION, or 'dev' when the file is missing."""
+    try:
+        with open(os.path.join(APP_DIR, "VERSION"), "r", encoding="utf-8") as handle:
+            return handle.read().strip() or "dev"
+    except OSError:
+        return "dev"

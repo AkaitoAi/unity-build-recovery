@@ -19,12 +19,29 @@
       --accent-purple: #8b5cf6;
       --accent-amber: #f59e0b;
       --accent-rose: #f43f5e;
+      --border: rgba(255, 255, 255, 0.08);
       --radius-lg: 16px;
       --radius-md: 10px;
       --radius-sm: 6px;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    button, .nav-btn, .step-pill, .filter-chip, .stat-tag { user-select: none; }
+    button:focus-visible, [role=button]:focus-visible, input:focus-visible, select:focus-visible,
+    textarea:focus-visible, tr:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+    @media (max-width: 900px) {
+      nav { flex-wrap: wrap; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr) !important; }
+      .input-row { flex-wrap: wrap; }
+    }
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 100; }
+    #modal.open { display: flex; }
+    #modal .box { background: #121826; border: 1px solid var(--border-glow); border-radius: var(--radius-md); max-width: 640px;
+      width: calc(100% - 32px); max-height: 80vh; display: flex; flex-direction: column; padding: 18px; gap: 12px; }
+    #modal pre { white-space: pre-wrap; word-break: break-word; overflow: auto; font: 13px/1.5 inherit; font-family: inherit; user-select: text; }
+    #modal .buttons { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .badge-down { color: var(--accent-rose) !important; }
     body {
       background: var(--bg-base);
       color: var(--text-main);
@@ -536,82 +553,99 @@
       <div class="brand-icon">♾️</div>
       <div class="brand-text">
         <h1>AETHER RECON STUDIO</h1>
-        <p>Unity build recovery for APK, XAPK and ZIP</p>
+        <p>Unity and Godot build recovery</p>
       </div>
     </div>
     <div class="header-status">
-      <div class="status-badge">
-        <div class="pulse-dot"></div>
-        <span>RUNS LOCALLY</span>
+      <div class="status-badge" role="status">
+        <div class="pulse-dot" id="server-dot"></div>
+        <span id="server-badge">Studio running on this PC</span>
       </div>
-      <button class="btn btn-purple" onclick="openReconstructedInUnity()">🎮 Open in Unity Editor</button>
+      <button class="btn" onclick="aboutOpen()">About</button>
+      <button class="btn btn-purple" onclick="openReconstructedInUnity()">Open project in Unity (runs recovered code)</button>
     </div>
   </header>
 
   <!-- Modern Segmented Navigation -->
-  <nav>
-    <button class="nav-btn active" onclick="switchNav('wizard')">🚀 Recovery Pipeline Wizard</button>
-    <button class="nav-btn" onclick="switchNav('scripts')">🧠 AI Semantic Script Studio</button>
-    <button class="nav-btn" onclick="switchNav('agent')">🤖 Agent Recovery</button>
-    <button class="nav-btn" onclick="switchNav('craft')">✨ Craft Anything</button>
-    <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health</button>
-    <button class="nav-btn" onclick="switchNav('console')">📜 Live Diagnostic Console</button>
+  <nav role="tablist" aria-label="Studio sections">
+    <button class="nav-btn active" role="tab" aria-selected="true" onclick="switchNav('wizard')">Recover</button>
+    <button class="nav-btn" role="tab" aria-selected="false" onclick="switchNav('scripts')">Scripts</button>
+    <button class="nav-btn" role="tab" aria-selected="false" onclick="switchNav('agent')">Agent Recovery</button>
+    <button class="nav-btn" role="tab" aria-selected="false" onclick="switchNav('craft')">Craft Anything</button>
+    <button class="nav-btn" role="tab" aria-selected="false" onclick="switchNav('tools')">Tools</button>
+    <button class="nav-btn" role="tab" aria-selected="false" onclick="switchNav('console')">Log</button>
   </nav>
 
   <!-- Main Work View -->
   <main>
     <!-- TAB 1: RECOVERY PIPELINE -->
-    <div id="pane-wizard" class="tab-pane active">
+    <div id="pane-wizard" role="tabpanel" class="tab-pane active">
       <!-- File Selector Card -->
       <div class="card">
         <div class="card-title">
-          <span>📁 Game Intake & Work Workspace</span>
+          <span>Game package and workspace</span>
           <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Unity and Godot: APK, XAPK, ZIP, PCK or EXE (use Recover.ps1 for Windows build folders)</span>
         </div>
         <div class="input-row">
-          <div class="input-label">Game Package:</div>
-          <input type="text" id="input-source" class="input-field" placeholder="Select APK / XAPK file..." value="">
+          <div class="input-label">Game package</div>
+          <input type="text" id="input-source" class="input-field" placeholder="Select an APK, XAPK, ZIP, PCK or EXE..." aria-label="Game package" value="">
           <button class="btn" onclick="browseSourceFile()">Browse File...</button>
-          <button class="btn" onclick="browseSourceFolder()">Browse Folder...</button>
+          <button class="btn" onclick="browseSourceFolder()" title="A build folder works only with Agent Recovery, not the built-in recovery">Browse Folder (agent mode only)</button>
         </div>
         <div class="input-row">
-          <div class="input-label">Workspace:</div>
-          <input type="text" id="input-work" class="input-field" placeholder="Target work directory..." value="">
+          <div class="input-label">Workspace</div>
+          <input type="text" id="input-work" class="input-field" placeholder="An empty folder for the output..." aria-label="Workspace folder" value="">
           <button class="btn" onclick="browseWorkFolder()">Browse...</button>
-          <button class="btn btn-primary" onclick="quickInspect()">🔍 Inspect Architecture</button>
+          <button class="btn btn-primary" onclick="quickInspect()">Inspect package</button>
         </div>
+      </div>
+
+      <!-- First run: which tools are in place -->
+      <div class="card" id="first-run-card">
+        <div class="card-title">
+          <span>Before you start: tools</span>
+          <span>
+            <button class="btn" onclick="openToolsFolder()">Open tools folder</button>
+            <button class="btn" onclick="loadFirstRun()">Check again</button>
+          </span>
+        </div>
+        <div id="first-run" style="font-size:13px;">Checking...</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-top:8px;">
+          7-Zip has to be installed by hand. The studio offers to download the others, after you approve the exact file and checksum,
+          when a recovery needs them. Details are on the Tools tab.
+        </p>
       </div>
 
       <!-- Live Inspection Dashboard (6 Modern Stat Cards) -->
       <div class="card">
         <div class="card-title">
-          <span>📊 Package Inspection & Architecture Dashboard</span>
-          <span id="badge-game-name" style="color:#ffffff;font-size:12px;font-weight:800;">Awaiting Inspection...</span>
+          <span>📊 Package details</span>
+          <span id="badge-game-name" style="color:#ffffff;font-size:12px;font-weight:800;">Not inspected yet</span>
         </div>
         <div class="stat-grid">
           <div class="stat-card">
             <span class="stat-tag">Engine Technology</span>
-            <span class="stat-val" id="stat-engine" style="color:var(--accent-purple);">Unknown</span>
+            <span class="stat-val" id="stat-engine" style="color:var(--accent-purple);">&mdash;</span>
           </div>
           <div class="stat-card">
             <span class="stat-tag">Scripting Backend</span>
-            <span class="stat-val" id="stat-backend" style="color:var(--accent-blue);">Unknown</span>
+            <span class="stat-val" id="stat-backend" style="color:var(--accent-blue);">&mdash;</span>
           </div>
           <div class="stat-card">
             <span class="stat-tag">Target Unity Version</span>
-            <span class="stat-val" id="stat-unity-ver" style="color:var(--accent-cyan);">N/A</span>
+            <span class="stat-val" id="stat-unity-ver" style="color:var(--accent-cyan);">&mdash;</span>
           </div>
           <div class="stat-card">
             <span class="stat-tag">ABIs & Architectures</span>
-            <span class="stat-val" id="stat-abis" style="color:var(--accent-emerald);">N/A</span>
+            <span class="stat-val" id="stat-abis" style="color:var(--accent-emerald);">&mdash;</span>
           </div>
           <div class="stat-card">
             <span class="stat-tag">Container Format</span>
-            <span class="stat-val" id="stat-format" style="color:#ffffff;">N/A</span>
+            <span class="stat-val" id="stat-format" style="color:#ffffff;">&mdash;</span>
           </div>
           <div class="stat-card">
             <span class="stat-tag">Package Size & Hash</span>
-            <span class="stat-val" id="stat-size" style="color:var(--accent-amber);">0 MB</span>
+            <span class="stat-val" id="stat-size" style="color:var(--accent-amber);">&mdash;</span>
           </div>
         </div>
       </div>
@@ -619,28 +653,29 @@
       <!-- Action Execution Center -->
       <div class="card" style="flex:1;">
         <div class="card-title">
-          <span>⚡ Automated Reconstruction Pipeline</span>
+          <span>Recovery</span>
           <span id="txt-pipeline-status" style="color:var(--text-muted);font-weight:500;">Ready to execute.</span>
           <div id="txt-active-tool" style="margin-top:6px;font-size:12px;color:var(--text-muted);"></div>
         </div>
 
         <div class="pipeline-hero">
           <button class="btn btn-emerald" style="font-size:13px;padding:12px 24px;" onclick="runFullPipeline()">
-            ⚡ RUN FULL RECOVERY PIPELINE (START TO END)
+            Run full recovery
           </button>
+          <button class="btn" id="btn-cancel" style="font-size:13px;padding:12px 20px;" onclick="cancelRun()" disabled>Cancel run</button>
           <button class="btn btn-purple" style="font-size:13px;padding:12px 20px;" onclick="autoPlayableBuildPreset()">
-            Auto-select gameplay scripts and scaffold project
+            Select gameplay scripts and build the Unity scaffold
           </button>
         </div>
 
         <div class="pipeline-steps">
-          <div class="step-pill" onclick="runSingleStage(1)">1. Unpack 7-Zip Container</div>
-          <div class="step-pill" onclick="runSingleStage(2)">2. AssetRipper 2.x Rip</div>
-          <div class="step-pill" onclick="runSingleStage(3)">3. Il2CppDumper / C# Dump</div>
-          <div class="step-pill" onclick="runSingleStage(4)">4. Build Unity Project Folder</div>
+          <div class="step-pill" role="button" tabindex="0" onclick="runSingleStage(1)">1. Unpack package (7-Zip)</div>
+          <div class="step-pill" role="button" tabindex="0" onclick="runSingleStage(2)">2. Rip assets (AssetRipper)</div>
+          <div class="step-pill" role="button" tabindex="0" onclick="runSingleStage(3)">3. Recover code (IL2CPP, JADX)</div>
+          <div class="step-pill" role="button" tabindex="0" onclick="runSingleStage(4)">4. Rebuild Unity project</div>
         </div>
 
-        <div class="progress-track">
+        <div class="progress-track" role="progressbar" aria-label="Recovery progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div id="prog-fill" class="progress-fill"></div>
         </div>
         <div id="stage-stepper" class="stage-stepper"></div>
@@ -667,7 +702,7 @@
     </div>
 
     <!-- TAB 2: AI SCRIPT SELECTOR -->
-    <div id="pane-scripts" class="tab-pane">
+    <div id="pane-scripts" role="tabpanel" class="tab-pane">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div style="display:flex;gap:8px;align-items:center;">
           <button class="btn btn-purple" onclick="autoPlayableBuildPreset()">Auto-select &amp; scaffold</button>
@@ -686,13 +721,13 @@
         <!-- Table container -->
         <div class="script-table-container">
           <div class="script-table-toolbar">
-            <div class="filter-chip active" onclick="filterCategory('All', this)">All</div>
-            <div class="filter-chip" onclick="filterCategory('Core Gameplay', this)">🎮 Core Gameplay</div>
-            <div class="filter-chip" onclick="filterCategory('UI & Presentation', this)">🎯 UI & Screens</div>
-            <div class="filter-chip" onclick="filterCategory('Game Systems & Audio', this)">🧩 Game Systems</div>
-            <div class="filter-chip" onclick="filterCategory('Plugins & Store Packages', this)">📦 Plugins</div>
-            <div class="filter-chip" onclick="filterCategory('Ad & Tracking SDKs', this)">🗑️ Ad & Tracking SDKs</div>
-            <input type="text" id="script-search" class="input-field" style="width:160px;margin-left:auto;padding:4px 8px;" placeholder="Search script..." onkeyup="renderScriptTable()">
+            <div role="button" tabindex="0" class="filter-chip active" onclick="filterCategory('All', this)">All</div>
+            <div role="button" tabindex="0" class="filter-chip" onclick="filterCategory('Core Gameplay', this)">🎮 Core Gameplay</div>
+            <div role="button" tabindex="0" class="filter-chip" onclick="filterCategory('UI & Presentation', this)">🎯 UI & Screens</div>
+            <div role="button" tabindex="0" class="filter-chip" onclick="filterCategory('Game Systems & Audio', this)">🧩 Game Systems</div>
+            <div role="button" tabindex="0" class="filter-chip" onclick="filterCategory('Plugins & Store Packages', this)">📦 Plugins</div>
+            <div role="button" tabindex="0" class="filter-chip" onclick="filterCategory('Ad & Tracking SDKs', this)">🗑️ Ad & Tracking SDKs</div>
+            <input type="text" id="script-search" class="input-field" style="width:160px;margin-left:auto;padding:4px 8px;" placeholder="Search script..." aria-label="Search scripts" onkeyup="renderScriptTable()">
           </div>
 
           <div class="table-scroll">
@@ -708,7 +743,7 @@
                 </tr>
               </thead>
               <tbody id="script-table-body">
-                <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">No scripts cataloged yet. Run the pipeline or click 'Scan Scripts'.</td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">No scripts listed yet. Run a recovery, then open this tab again.</td></tr>
               </tbody>
             </table>
           </div>
@@ -726,7 +761,7 @@
     </div>
 
     <!-- TAB 3: TOOLS HEALTH -->
-    <div id="pane-tools" class="tab-pane">
+    <div id="pane-tools" role="tabpanel" class="tab-pane">
       <div class="card" style="flex:1;">
         <div class="card-title">
           <span>🛠️ Installed Reverse Engineering & Recovery Tools (runs locally)</span>
@@ -752,7 +787,7 @@
     </div>
 
     <!-- TAB: AGENT RECOVERY -->
-    <div id="pane-agent" class="tab-pane">
+    <div id="pane-agent" role="tabpanel" class="tab-pane">
       <div class="card">
         <div class="card-title"><span>🤖 Let an AI coding agent do the recovery</span>
           <button class="btn" onclick="agentsLoad()">Detect agents</button></div>
@@ -785,7 +820,7 @@
     </div>
 
     <!-- TAB: CRAFT ANYTHING -->
-    <div id="pane-craft" class="tab-pane">
+    <div id="pane-craft" role="tabpanel" class="tab-pane">
       <div class="card">
         <div class="card-title"><span>✨ Craft Anything: have a coding agent add a missing system</span></div>
         <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
@@ -829,24 +864,89 @@
     </div>
 
     <!-- TAB 4: LIVE LOGS -->
-    <div id="pane-console" class="tab-pane">
+    <div id="pane-console" role="tabpanel" class="tab-pane">
       <div class="card" style="flex:1;display:flex;flex-direction:column;">
         <div class="card-title">
           <span>📜 Real-Time Pipeline Diagnostic Console</span>
-          <button class="btn" onclick="document.getElementById('console-log').innerText=''">Clear Console</button>
+          <button class="btn" onclick="copyLog()">Copy log</button>
+          <button class="btn" onclick="saveLog()">Save log...</button>
+          <button class="btn" onclick="openWorkspace('')">Open workspace folder</button>
+          <button class="btn" onclick="openWorkspace('reports')">Open reports folder</button>
+          <button class="btn" onclick="clearLog()">Clear</button>
         </div>
         <div class="console-box" id="console-log">
-[SYSTEM INITIALIZED] AETHER RECON STUDIO — Offline Edition
-Local recovery tools are listed on the Tools tab.
+Aether Recon Studio. The tools in use are listed on the Tools tab.
         </div>
       </div>
     </div>
   </main>
 
-  <div id="activity-bar"></div>
+  <div id="activity-bar" role="status" aria-live="polite"></div>
+
+  <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-text">
+    <div class="box">
+      <pre id="modal-text"></pre>
+      <div class="buttons" id="modal-buttons"></div>
+    </div>
+  </div>
 
   <script>
     function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
+    // ---- In-app dialogs (replace the browser's alert / confirm / prompt) ----
+    let modalQueue = Promise.resolve();
+    function modalShow(text, buttons) {
+      // One dialog at a time; each resolves with the value of the button pressed.
+      const run = () => new Promise(resolve => {
+        const modal = document.getElementById('modal');
+        document.getElementById('modal-text').textContent = text;
+        const row = document.getElementById('modal-buttons');
+        row.innerHTML = '';
+        const close = (value) => { modal.classList.remove('open'); resolve(value); };
+        buttons.forEach((b, i) => {
+          const btn = document.createElement('button');
+          btn.className = 'btn' + (b.primary ? ' btn-primary' : '');
+          btn.textContent = b.label;
+          btn.onclick = () => close(b.value);
+          row.appendChild(btn);
+          if (i === buttons.length - 1 || b.primary) setTimeout(() => btn.focus(), 0);
+        });
+        modal.onkeydown = (ev) => { if (ev.key === 'Escape') close(buttons[0].value); };
+        modal.classList.add('open');
+      });
+      modalQueue = modalQueue.then(run, run);
+      return modalQueue;
+    }
+    function uiAlert(text) { return modalShow(String(text), [{label: 'OK', value: true, primary: true}]); }
+    function uiConfirm(text, okLabel) {
+      return modalShow(String(text), [{label: 'Cancel', value: false}, {label: okLabel || 'OK', value: true, primary: true}]);
+    }
+    function uiChoose(text, options) {
+      return modalShow(String(text), [{label: 'Cancel', value: null}].concat(options.map((o, i) => ({label: o, value: o, primary: i === 0}))));
+    }
+    window.alert = function (text) { uiAlert(text); };
+
+    // One way to call the API: always returns {ok, status, data}, and never throws on an error reply.
+    async function api(url, options) {
+      try {
+        const res = await fetch(url, options);
+        let data = null;
+        try { data = await res.json(); } catch (e) { data = null; }
+        return {ok: res.ok, status: res.status, data: data || {}};
+      } catch (e) {
+        return {ok: false, status: 0, data: {message: 'The studio did not answer. Is it still running?'}};
+      }
+    }
+    function postJson(url, body) {
+      return api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    }
+    // Enter or Space presses anything marked role=button.
+    document.addEventListener('keydown', (ev) => {
+      const t = ev.target;
+      if (t && t.getAttribute && t.getAttribute('role') === 'button' && (ev.key === 'Enter' || ev.key === ' ')) {
+        ev.preventDefault(); t.click();
+      }
+    });
+
     let scriptsData = [];
     let currentCategoryFilter = 'All';
     let isPipelineRunning = false;
@@ -857,6 +957,7 @@ Local recovery tools are listed on the Tools tab.
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
 
       event.target.classList.add('active');
+      document.querySelectorAll('.nav-btn').forEach(b => b.setAttribute('aria-selected', b.classList.contains('active') ? 'true' : 'false'));
       document.getElementById('pane-' + tabName).classList.add('active');
 
       if (tabName === 'tools') loadToolsHealth();
@@ -867,8 +968,9 @@ Local recovery tools are listed on the Tools tab.
     async function agentsLoad() {
       const box = document.getElementById('agent-list');
       box.innerText = 'Detecting...';
-      const res = await fetch('/api/agents');
-      const data = await res.json();
+      const r = await api('/api/agents');
+      if (!r.ok) { box.textContent = 'Could not detect agents: ' + (r.data.message || r.status); return; }
+      const data = r.data;
       box.innerHTML = '';
       const reaInfo = data.rea || {};
       document.getElementById('rea-status').innerText = reaInfo.installed
@@ -952,8 +1054,9 @@ Local recovery tools are listed on the Tools tab.
     async function craftLoadAgents() {
       const status = document.getElementById('craft-status');
       status.innerText = 'Looking for agents...';
-      const res = await fetch('/api/craft/agents?cli=' + encodeURIComponent(craftCli()));
-      const data = await res.json();
+      const r = await api('/api/craft/agents?cli=' + encodeURIComponent(craftCli()));
+      const data = r.data;
+      data.agents = data.agents || [];
       const select = document.getElementById('craft-agent');
       const keep = select.value;
       select.innerHTML = '<option value="">First available</option>' +
@@ -1101,6 +1204,13 @@ Local recovery tools are listed on the Tools tab.
       }).join('');
     }
 
+    function setServerBadge(up) {
+      const badge = document.getElementById('server-badge');
+      badge.textContent = up ? 'Studio running on this PC' : 'Studio stopped: close this window and start it again';
+      badge.classList.toggle('badge-down', !up);
+      document.getElementById('server-dot').style.background = up ? '' : 'var(--accent-rose)';
+    }
+
     async function pollActivity() {
       let wait = 3000;
       try {
@@ -1146,12 +1256,15 @@ Local recovery tools are listed on the Tools tab.
         } else if (cr.finished_at && now - cr.finished_at < recent) {
           rows.push(activityRow(cr.status === 'complete' ? 'done' : 'failed', 'Craft Anything ' + cr.status, 100, cr.message || '', fmtTime(cr.finished_at - cr.started_at)));
         }
+        document.getElementById('btn-cancel').disabled = !(p.running && (p.kind === 'recovery' || p.kind === 'stage'));
+        document.querySelector('.progress-track').setAttribute('aria-valuenow', String(parseInt(fill.style.width, 10) || 0));
+        setServerBadge(true);
         const bar = document.getElementById('activity-bar');
         bar.innerHTML = rows.join('');
         bar.style.display = rows.length ? 'flex' : 'none';
         document.body.classList.toggle('has-activity', rows.length > 0);
         wait = (p.running || ins.running || cr.running) ? 1000 : 2500;
-      } catch (e) { /* the studio may be restarting; try again shortly */ }
+      } catch (e) { setServerBadge(false); }
       setTimeout(pollActivity, wait);
     }
 
@@ -1161,43 +1274,98 @@ Local recovery tools are listed on the Tools tab.
       const idx = ['wizard', 'scripts', 'agent', 'craft', 'tools', 'console'].indexOf(tabName);
       const buttons = document.querySelectorAll('.nav-btn');
       if (buttons[idx]) buttons[idx].classList.add('active');
+      buttons.forEach(b => b.setAttribute('aria-selected', b.classList.contains('active') ? 'true' : 'false'));
       document.getElementById('pane-' + tabName).classList.add('active');
     }
 
     // Logging helper
+    const LOG_CAP = 5000;
+    let logLines = [];
     function logMessage(msg) {
       const el = document.getElementById('console-log');
-      el.innerText += '\n' + msg;
+      logLines.push(String(msg));
+      if (logLines.length > LOG_CAP) logLines = logLines.slice(-LOG_CAP);
+      el.innerText = logLines.join('\n');
       el.scrollTop = el.scrollHeight;
       document.getElementById('txt-pipeline-status').innerText = msg;
+    }
+
+    function logText() { return document.getElementById('console-log').innerText; }
+    async function copyLog() {
+      try { await navigator.clipboard.writeText(logText()); logMessage('Log copied to the clipboard.'); }
+      catch (e) { uiAlert('The browser would not copy. Select the text in the log and press Ctrl+C.'); }
+    }
+    function saveLog() {
+      const blob = new Blob([logText()], {type: 'text/plain'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'studio-log.txt'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+    function clearLog() { logLines = []; document.getElementById('console-log').innerText = ''; }
+    async function openWorkspace(sub) {
+      const dest = document.getElementById('input-work').value.trim();
+      if (!dest) return uiAlert('Choose a workspace folder first.');
+      const r = await postJson('/api/open-folder', {work_folder: dest, sub: sub});
+      if (!r.ok) uiAlert(r.data.message || 'Could not open the folder.');
+    }
+    async function openToolsFolder() { await postJson('/api/open-tools-folder', {}); }
+
+    async function aboutOpen() {
+      const r = await api('/api/version');
+      const d = r.data || {};
+      uiAlert('Aether Recon Studio ' + (d.version || '') + '\n\nTools folder: ' + (d.tools_root || '?') +
+        '\nStudio folder: ' + (d.app_dir || '?') + '\nLog folder: ' + (d.log_dir || '?') + '\n\nDocs: ' + (d.docs || ''));
+    }
+
+    // Which tools are in place, for the first-run card.
+    async function loadFirstRun() {
+      const box = document.getElementById('first-run');
+      const r = await api('/api/tools/status');
+      if (!r.ok || !Array.isArray(r.data)) { box.textContent = 'Could not read the tool list.'; return; }
+      const want = [['7-Zip', 'Unity: unpacking (install by hand)'], ['AssetRipper', 'Unity: asset rip'],
+                    ['Il2CppDumper', 'Unity IL2CPP: code (or Cpp2IL)'], ['Cpp2IL', 'Unity IL2CPP: code (or Il2CppDumper)'],
+                    ['JADX', 'Android: Java code'], ['GDRE', 'Godot: project recovery']];
+      box.innerHTML = want.map(([key, why]) => {
+        const t = r.data.find(x => x.name.indexOf(key) === 0);
+        const ok = t && t.status.indexOf('PASS') >= 0;
+        return '<div>' + (ok ? '<b style="color:var(--accent-emerald)">Installed</b>' : '<b style="color:var(--accent-amber)">Missing</b>') +
+          ' &nbsp; ' + esc(t ? t.name : key) + ' <span style="color:var(--text-muted)">&ndash; ' + esc(why) + '</span></div>';
+      }).join('');
+    }
+
+    async function cancelRun() {
+      if (!(await uiConfirm('Stop the running recovery? The tool that is running is ended, and no further stage starts. Files already written stay in the workspace.', 'Stop it'))) return;
+      const r = await postJson('/api/pipeline/cancel', {});
+      logMessage(r.data.cancelled ? 'Cancel requested.' : 'Nothing was running.');
     }
 
     // Inspect
     async function quickInspect() {
       const src = document.getElementById('input-source').value.trim();
-      if (!src) return alert('Please enter or browse a game package path first.');
+      if (!src) return uiAlert('Enter or browse to a game package first.');
 
-      logMessage('🔍 Inspecting game package: ' + src);
-      try {
-        const res = await fetch('/api/inspect', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ path: src })
-        });
-        const info = await res.json();
-
-        document.getElementById('badge-game-name').innerText = info.app_name || info.name || 'Game Detected';
-        document.getElementById('stat-engine').innerText = info.engine || 'Unknown';
-        document.getElementById('stat-backend').innerText = info.backend || 'Unknown';
-        document.getElementById('stat-unity-ver').innerText = info.unity_version || 'N/A';
-        document.getElementById('stat-abis').innerText = (info.abis && info.abis.length) ? info.abis.join(', ') : 'Universal';
-        document.getElementById('stat-format').innerText = info.format || 'Archive';
-        document.getElementById('stat-size').innerText = `${info.size_mb} MB (${info.sha256.substring(0, 10)}...)`;
-
-        logMessage(`✓ Inspected: ${info.engine} (${info.backend})`);
-      } catch (e) {
-        logMessage('Error inspecting: ' + e);
+      logMessage('Inspecting game package: ' + src);
+      const r = await postJson('/api/inspect', {path: src});
+      if (!r.ok) {
+        logMessage('Could not inspect the package: ' + (r.data.message || r.status));
+        return uiAlert('Could not inspect the package.\n\n' + (r.data.message || 'The studio did not accept the request.'));
       }
+      const info = r.data;
+      if (info.error) {
+        logMessage('Could not inspect the package: ' + info.error);
+        return uiAlert('Could not inspect the package: ' + info.error);
+      }
+      document.getElementById('badge-game-name').innerText = info.app_name || info.name || 'Package inspected';
+      document.getElementById('stat-engine').innerText = info.engine || 'Unknown';
+      document.getElementById('stat-backend').innerText = info.backend || 'Unknown';
+      document.getElementById('stat-unity-ver').innerText = info.unity_version || 'N/A';
+      document.getElementById('stat-abis').innerText = (info.abis && info.abis.length) ? info.abis.join(', ') : 'Universal';
+      document.getElementById('stat-format').innerText = info.format || 'Archive';
+      const hash = info.sha256 || '';
+      const size = document.getElementById('stat-size');
+      size.innerText = hash ? `${info.size_mb} MB (${hash.substring(0, 10)}...)` : `${info.size_mb} MB`;
+      size.title = hash ? 'SHA-256 ' + hash : '';
+      logMessage(`Inspected: ${info.engine} (${info.backend})`);
     }
 
     // Pipeline Execution
@@ -1244,10 +1412,10 @@ Local recovery tools are listed on the Tools tab.
           '\n\nInstall the first group, then run the recovery again.');
         return false;
       }
-      const ok = confirm('This ' + out.engine + ' game needs tools that are not installed yet:\n\n' +
+      const ok = await uiConfirm('This ' + out.engine + ' game needs tools that are not installed yet:\n\n' +
         tools.map(describeTool).join('\n\n') +
         '\n\nThe studio will download these files from the addresses above, check each against the SHA-256 shown, ' +
-        'and install them in your tools folder. Download now?');
+        'and install them in your tools folder. Download now?', 'Download');
       if (!ok) return false;
       for (const t of tools) { if (!(await installAndWait(t.name, t.version, t.sha256))) return false; }
       return true;
@@ -1321,6 +1489,8 @@ Local recovery tools are listed on the Tools tab.
       const src = document.getElementById('input-source').value.trim();
       const dest = document.getElementById('input-work').value.trim();
       if (!src || !dest) return alert('Choose the package and a workspace folder first.');
+      if (isPipelineRunning) return alert('A recovery is already running. Wait for it, or cancel it first.');
+      isPipelineRunning = true;
       logMessage(`Executing Stage ${stageNum}...`);
       try {
         const send = async () => {
@@ -1341,23 +1511,33 @@ Local recovery tools are listed on the Tools tab.
         else logMessage(`Stage ${stageNum} completed.`);
       } catch (e) {
         logMessage(`Stage ${stageNum} failed: ${e}`);
+      } finally {
+        isPipelineRunning = false;
       }
     }
 
     // Scripts & AI Classifier
     async function scanScripts() {
       const dest = document.getElementById('input-work').value.trim();
-      logMessage('🧠 Scanning decompiled scripts for AI classification...');
+      logMessage('Listing the recovered scripts...');
       try {
         const res = await fetch('/api/scripts/scan', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ work_folder: dest })
         });
-        const scanned = res.ok ? await res.json() : [];
-        scriptsData = Array.isArray(scanned) ? scanned : [];
+        const scanned = res.ok ? await res.json() : null;
+        if (!Array.isArray(scanned)) {
+          let why = 'the workspace has no recovered scripts yet';
+          try { why = (await res.json()).message || why; } catch (e) { /* body already read */ }
+          logMessage('Scripts were not listed: ' + why);
+          scriptsData = [];
+          renderScriptTable();
+          return;
+        }
+        scriptsData = scanned;
         renderScriptTable();
-        logMessage(`✓ AI Classifier processed ${scriptsData.length} scripts.`);
+        logMessage(`Listed ${scriptsData.length} scripts.`);
       } catch (e) {
         logMessage('Error scanning scripts: ' + e);
       }
@@ -1380,6 +1560,8 @@ Local recovery tools are listed on the Tools tab.
         visible++;
         const tr = document.createElement('tr');
         tr.onclick = () => previewScript(s);
+        tr.tabIndex = 0;
+        tr.onkeydown = (ev) => { if (ev.key === 'Enter') previewScript(s); };
 
         let badgeClass = 'badge-gameplay';
         if (s.category.includes('UI')) badgeClass = 'badge-ui';
@@ -1388,7 +1570,7 @@ Local recovery tools are listed on the Tools tab.
         if (s.category.includes('Ad')) badgeClass = 'badge-ads';
 
         tr.innerHTML = `
-          <td style="text-align:center;"><input type="checkbox" ${s.is_selected ? 'checked' : ''} onclick="event.stopPropagation(); toggleSelect(${idx})"></td>
+          <td style="text-align:center;"><input type="checkbox" aria-label="Select ${esc(s.name)}" ${s.is_selected ? 'checked' : ''} onclick="event.stopPropagation(); toggleSelect(${idx})"></td>
           <td style="font-weight:700;">${esc(s.name)}</td>
           <td><span class="badge-cat ${badgeClass}">${esc(s.badge)} ${esc(s.category)}</span></td>
           <td style="text-align:center;font-weight:700;color:var(--accent-cyan);">${esc(s.confidence)}</td>
@@ -1451,10 +1633,12 @@ Local recovery tools are listed on the Tools tab.
     }
 
     async function autoPlayableBuildPreset() {
-      selectRecommendedGameplay();
-      logMessage('🎯 Selecting gameplay scripts and scaffolding the project...');
       const dest = document.getElementById('input-work').value.trim();
       if (!dest) return alert('Choose a workspace folder first.');
+      if (!(await uiConfirm('This writes into the workspace 05_project folder: it copies the scripts it classes as gameplay into Assets/_Project/Scripts, ' +
+          'and adds a package manifest and placeholder SDK stubs. Nothing is deleted. Continue?', 'Write the scaffold'))) return;
+      selectRecommendedGameplay();
+      logMessage('Selecting gameplay scripts and scaffolding the project...');
       const presetRes = await fetch('/api/scripts/auto-playable-preset', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1481,11 +1665,8 @@ Local recovery tools are listed on the Tools tab.
     async function openReconstructedInUnity() {
       const dest = document.getElementById('input-work').value.trim();
       if (!dest) return alert('Choose a workspace folder first.');
-      const answer = prompt('Open which folder in Unity? Type 05_project (the rebuilt project) or 06_playable (the repaired copy).', '05_project');
-      if (answer === null) return;
-      const target = answer.trim();
-      if (target !== '05_project' && target !== '06_playable') return alert('Type 05_project or 06_playable.');
-      if (!confirm('Opening ' + target + ' makes Unity compile its scripts. That runs code from the recovered game inside the editor on this PC.\n\nOpen it?')) return;
+      const target = await uiChoose('Open which folder in Unity?\n\n05_project is the rebuilt project. 06_playable is an agent\'s repaired copy.\n\nOpening a project makes Unity compile its scripts, which runs code from the recovered game inside the editor on this PC.', ['05_project', '06_playable']);
+      if (!target) return;
       logMessage('Launching Unity Editor on ' + dest + '/' + target + '...');
       const res = await fetch('/api/open-unity', {
         method: 'POST',
@@ -1592,8 +1773,8 @@ Local recovery tools are listed on the Tools tab.
       const detail = offer.sha256
         ? '\nFrom: ' + (offer.download || offer.url) + '\nSize: ' + (offer.size_mb || '?') + ' MB\nSHA-256: ' + offer.sha256
         : '\nFrom npm. The exact version will be installed; npm checks its own integrity data.';
-      if (!confirm('Install ' + offer.name + ' ' + offer.latest + '?' + detail +
-          '\n\nThe studio downloads exactly this version and refuses to install anything else.')) return;
+      if (!(await uiConfirm('Install ' + offer.name + ' ' + offer.latest + '?' + detail +
+          '\n\nThe studio downloads exactly this version and refuses to install anything else.', 'Install'))) return;
       const bar = document.getElementById('bar-' + name);
       const fill = document.getElementById('fill-' + name);
       const msg = document.getElementById('msg-' + name);
@@ -1631,8 +1812,9 @@ Local recovery tools are listed on the Tools tab.
     async function loadToolsHealth() {
       const container = document.getElementById('tools-grid-container');
       container.innerHTML = 'Loading tools status...';
-      const res = await fetch('/api/tools/status');
-      const tools = await res.json();
+      const r = await api('/api/tools/status');
+      if (!r.ok || !Array.isArray(r.data)) { container.textContent = 'Could not read the tool list: ' + (r.data.message || r.status); return; }
+      const tools = r.data;
       container.innerHTML = '';
       tools.forEach(t => {
         const item = document.createElement('div');
@@ -1675,6 +1857,8 @@ Local recovery tools are listed on the Tools tab.
       if (document.getElementById('input-source').value.trim()) setTimeout(quickInspect, 400);
       pollActivity();
       loadToolsHealth();
+      loadFirstRun();
+      api('/api/version').then(r => { if (r.data.version) logMessage('Aether Recon Studio ' + r.data.version); });
     });
   </script>
 </body>

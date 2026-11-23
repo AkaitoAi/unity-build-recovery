@@ -128,7 +128,9 @@ def start_server():
     # server.py prints as it starts. Under pythonw.exe there is no console, so sys.stdout is
     # None and the first print() would kill it. Giving it a real log file keeps it alive and
     # leaves something to read if it ever fails to come up.
-    log = open(os.path.join(APP_DIR, "studio_server.log"), "w", encoding="utf-8", errors="replace")
+    from paths import LOG_DIR
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log = open(os.path.join(LOG_DIR, "server-console.log"), "a", encoding="utf-8", errors="replace")
     process = subprocess.Popen(
         # --server-only: this launcher opens and owns the window, so the server must not
         # open a second one of its own.

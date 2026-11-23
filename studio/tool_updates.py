@@ -94,14 +94,16 @@ TOOLS = [
 
 def _load_cache():
     try:
-        return json.load(open(CACHE_PATH, encoding="utf-8"))
+        with open(CACHE_PATH, encoding="utf-8") as handle:
+            return json.load(handle)
     except Exception:
         return {}
 
 
 def _save_cache(cache):
     try:
-        json.dump(cache, open(CACHE_PATH, "w", encoding="utf-8"), indent=1)
+        with open(CACHE_PATH, "w", encoding="utf-8") as handle:
+            json.dump(cache, handle, indent=1)
     except Exception:
         pass
 
