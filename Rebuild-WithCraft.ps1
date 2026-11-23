@@ -9,7 +9,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $report = Get-Item -LiteralPath $ReportPath
-$entries = @(Get-Content -LiteralPath $report.FullName -Raw | ConvertFrom-Json)
+$parsed = Get-Content -LiteralPath $report.FullName -Raw | ConvertFrom-Json
+# Windows PowerShell 5.1 hands a JSON array over as one object; enumerate it explicitly.
+$entries = @($parsed | ForEach-Object { $_ })
 if ($InputNumber -gt $entries.Count) { throw "The report contains only $($entries.Count) inputs." }
 
 $entry = $entries[$InputNumber - 1]
@@ -46,6 +48,10 @@ Implement this missing gameplay system in the existing Unity project. Keep the p
 
 $Task
 "@
+if ($cli.Source -match '\.(cmd|bat)$' -and $prompt -match '[&|^%<>]') {
+    throw 'This CLI is a .cmd or .bat shim, which cannot pass & | ^ % < > safely. Remove those characters from -Task.'
+}
+if ($PSVersionTable.PSVersion.Major -lt 7) { $prompt = $prompt.Replace('"', '\"') }
 & $cli.Source rebuild '-' $prompt --project-folder $draft --existing edit
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
