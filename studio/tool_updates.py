@@ -423,6 +423,7 @@ def install(name, progress=None, approved=None):
     report(6, f"Downloading {latest['download_name']} ...")
     request = urllib.request.Request(url, headers={"User-Agent": "aether-recon-studio"})
     chunks = []
+    began = time.time()
     with urllib.request.urlopen(request, timeout=900) as response:
         total = int(response.headers.get("Content-Length") or 0)
         got = 0
@@ -432,11 +433,16 @@ def install(name, progress=None, approved=None):
                 break
             chunks.append(chunk)
             got += len(chunk)
+            speed = got / max(time.time() - began, 0.001)
             if total:
-                report(6 + int(got / total * 74), f"Downloading {got / 1e6:.1f} of {total / 1e6:.1f} MB")
+                left = (total - got) / max(speed, 1)
+                report(6 + int(got / total * 74),
+                       f"Downloading {latest['download_name']}: {got / 1e6:.1f} of {total / 1e6:.1f} MB "
+                       f"({int(got / total * 100)}%) at {speed / 1e6:.1f} MB/s, about {int(left)} s left")
             else:
-                report(40, f"Downloading {got / 1e6:.1f} MB")
+                report(40, f"Downloading {latest['download_name']}: {got / 1e6:.1f} MB at {speed / 1e6:.1f} MB/s")
     blob = b"".join(chunks)
+    report(81, "Download finished. Checking the SHA-256...")
 
     expected = latest.get("sha256", "")
     if not expected:

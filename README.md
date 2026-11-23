@@ -101,6 +101,16 @@ ode_modulesea-agents` and a Node.js it finds in the tool root or on PATH. If RE
 - Windows build folders work in this mode, unlike the Studio's built-in pipeline.
 - The agent is not tracked by the studio. It does not hold the run lock, so do not run the built-in pipeline in the same workspace at the same time.
 
+### Progress display
+
+A bar at the bottom of every tab shows what is running, with elapsed time:
+
+- **Recovery:** the current stage, "step 3 of 5", the tool working (AssetRipper, JADX, GDRE), its last output line, and a bar that fills as stages finish. The Recovery tab also lists every stage with a mark: waiting, working (with its own timer), done with the files it wrote, or failed with the reason. The list stays after the run until the next one starts.
+- **Downloads and installs:** the tool, megabytes downloaded of the total, percent, speed and time left, then the checksum and install steps. An npm install (REA) has no percentage, so it shows elapsed time.
+- **Craft Anything:** a moving bar, its last output line and elapsed time.
+
+The external tools do not report a percentage while they work (an AssetRipper export can take many minutes), so a stage shows elapsed time and the tool's last line instead of a made-up percentage. A finished task stays on the bar for 15 seconds. Agent launches show no bar: the agent runs in its own window.
+
 ### Security notes
 
 The server accepts only requests that come from its own page: it checks the Host and Origin headers and a token generated at each launch. It needs a full-path workspace (not a drive root, and not inside the studio or tool folders), limits file reads and script copies to that workspace, and runs one recovery or install at a time. Any program on your PC that can reach `127.0.0.1:5899` can fetch the page and its token, so do not run the studio on a shared machine. Tool installs from the Tools tab are extracted to a temporary folder and moved into place only if they contain the expected files. They must match the SHA-256 digest published with the GitHub release, and zip paths are checked before extraction. REA, which installs through npm, has no digest check; the install runs with `--ignore-scripts`. A digest from the same release page detects a corrupted download, not a compromised release.
