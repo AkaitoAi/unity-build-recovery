@@ -8,6 +8,7 @@ digest published with the release and checks it before anything is installed.
 
 import os
 
+import rea as rea_support
 import tool_updates
 from paths import TOOLS_ROOT
 from scanner import SEVEN_ZIP
@@ -41,6 +42,8 @@ def _il2cpp_tool_present() -> bool:
 def _present(name: str) -> bool:
     if name == "7-Zip":
         return os.path.exists(SEVEN_ZIP)
+    if name == "REA":
+        return bool(rea_support.find_rea())  # the package and Node.js must both be there
     tool = _tool(name)
     return bool(tool and os.path.exists(tool["marker"]))
 
@@ -54,6 +57,16 @@ def describe(name: str) -> dict:
         base.update(manual=True, note="Unknown tool.")
         return base
     base["role"] = tool.get("role", "")
+    if tool.get("npm"):
+        try:
+            latest = tool_updates._newest_npm(tool["npm"])
+        except Exception as exc:
+            base["note"] = f"Could not look up the npm package ({type(exc).__name__}). Install it by hand."
+            return base
+        base.update(version=latest["tag"], url=latest["url"], release_url=latest["url"], can_install=True,
+                    note="Installed with npm at exactly this version (npm checks the package's own integrity data). "
+                         "Needs Node.js.")
+        return base
     try:
         latest = tool_updates._newest_release(tool["repo"], tool.get("asset_pattern"), tool.get("stable_only", False))
     except Exception as exc:
@@ -72,10 +85,11 @@ def describe(name: str) -> dict:
     return base
 
 
-def missing_tools(info: dict) -> list:
-    """Details for every required tool that is not installed yet."""
+def missing_tools(info: dict, extra=()) -> list:
+    """Details for every required tool that is not installed yet. `extra` names optional tools
+    the user asked for (for example REA)."""
     out = []
-    for need in required_tools(info):
+    for need in required_tools(info) + [{"tool": name} for name in extra]:
         name = need["tool"]
         if _present(name):
             continue

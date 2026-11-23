@@ -23,6 +23,7 @@ if APP_DIR not in sys.path:
 from paths import TOOLS_ROOT
 import craft
 import agents
+import rea as rea_support
 import tool_needs
 from scanner import inspect_game
 from script_ai_selector import scan_and_classify_directory, export_selected_scripts, ScriptItem
@@ -254,7 +255,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"tools": [], "error": f"{type(exc).__name__}: {exc}"})
         elif path == "/api/agents":
-            self.send_json({"agents": agents.detect()})
+            self.send_json({"agents": agents.detect(), "rea": rea_support.status()})
         elif path == "/api/craft/agents":
             query = urllib.parse.parse_qs(parsed.query)
             self.send_json(craft.list_agents(query.get("cli", [""])[0]))
@@ -591,14 +592,15 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "busy", "message": "Another run or install is in progress."}, status=409)
                 return
         info = inspect_game(src)
-        missing = tool_needs.missing_tools(info)
+        use_rea = body.get("use_rea") is True
+        missing = tool_needs.missing_tools(info, extra=["REA"] if use_rea else ())
         if missing:
             self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
-                            "message": "Some tools this game needs are not installed."}, status=409)
+                            "message": "Some tools are not installed."}, status=409)
             return
         agents.check_agent(str(body.get("agent", "")))
         RecoveryPipeline(src, work_folder).claim_workspace(info)
-        result = agents.launch(str(body.get("agent", "")), src, work_folder, info)
+        result = agents.launch(str(body.get("agent", "")), src, work_folder, info, use_rea=use_rea)
         self.send_json({"status": "started", **result})
 
     def handle_craft_run(self, body):

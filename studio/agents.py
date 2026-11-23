@@ -15,11 +15,13 @@ agent can still be fooled by text inside a hostile build, so keep its permission
 Whatever the agent sees goes to that agent's provider.
 """
 
+import json
 import os
 import shutil
 import subprocess
 import time
 
+import rea as rea_support
 from agent_prompt import build_prompt
 from paths import TOOLS_ROOT
 
@@ -132,9 +134,9 @@ def detect() -> list:
     return found
 
 
-def build_task(source: str, work_folder: str, info: dict) -> str:
+def build_task(source: str, work_folder: str, info: dict, rea=None, rea_via_mcp: bool = False) -> str:
     """The recovery prompt for this game."""
-    return build_prompt(source, work_folder, info)
+    return build_prompt(source, work_folder, info, rea, rea_via_mcp)
 
 
 def _copy_to_clipboard(text: str) -> bool:
@@ -162,7 +164,7 @@ def check_agent(agent_id: str) -> None:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
 
 
-def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
+def launch(agent_id: str, source: str, work_folder: str, info: dict, use_rea: bool = False) -> dict:
     """Writes AGENT_TASK.md and opens the chosen agent (console window or desktop app)."""
     agent = _by_id.get(agent_id)
     if not agent:
@@ -173,7 +175,13 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
         raise ValueError(f"{agent['name']} is not installed (or not on PATH).")
     os.makedirs(work_folder, exist_ok=True)
     task_path = os.path.join(work_folder, "AGENT_TASK.md")
-    prompt = build_task(source, work_folder, info)
+    rea = rea_support.find_rea() if use_rea else None
+    if use_rea and not rea:
+        raise ValueError("REA is not installed here (it needs the rea-agents package and Node.js).")
+    # REA is connected as MCP tools for Claude Code and Codex CLI, for this run only; every other
+    # agent is told to run it from the shell.
+    via_mcp = bool(rea) and not desktop and agent["id"] in ("claude", "codex")
+    prompt = build_task(source, work_folder, info, rea, via_mcp)
     with open(task_path, "w", encoding="utf-8") as handle:
         handle.write(prompt)
 
@@ -183,7 +191,17 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
         subprocess.Popen(args, cwd=work_folder, close_fds=True)
     else:
         args = [path]
-        if agent["prompt_args"] is not None:
+        if via_mcp and agent["id"] == "claude":
+            config = os.path.join(work_folder, ".rea-mcp.json")
+            with open(config, "w", encoding="utf-8") as handle:
+                json.dump(rea_support.mcp_config(rea), handle)
+            # --mcp-config takes several values, so the prompt goes first.
+            args += [FIRST_MESSAGE, "--mcp-config", config]
+            pasted = False
+        elif via_mcp and agent["id"] == "codex":
+            args += rea_support.codex_overrides(rea) + [FIRST_MESSAGE]
+            pasted = False
+        elif agent["prompt_args"] is not None:
             args += agent["prompt_args"] + [FIRST_MESSAGE]
             pasted = False  # flags for the rest are unknown here: open it empty, user pastes the line
         subprocess.Popen(args, cwd=work_folder, creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -198,4 +216,5 @@ def launch(agent_id: str, source: str, work_folder: str, info: dict) -> dict:
             "paste_this": clipboard_text if pasted else "",
             "copy_text": clipboard_text, "copy_chars": len(clipboard_text),
             "copy_is_prompt": clipboard_text is prompt, "copied": copied,
+            "rea": ("mcp" if via_mcp else "cli") if rea else "",
             "started_at": time.time()}
