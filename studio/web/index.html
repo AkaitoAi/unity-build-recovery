@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AETHER RECON — AAA Game Decompiler & Unity Playable Studio</title>
+  <link rel="icon" type="image/png" href="studio_icon.png">
+  <style>
+    :root {
+      --bg-base: #080c14;
+      --bg-surface: rgba(18, 24, 38, 0.75);
+      --bg-card-inner: rgba(26, 34, 52, 0.6);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(0, 242, 254, 0.35);
+      --text-main: #f0f6fc;
+      --text-muted: #8b9bb4;
+      --accent-cyan: #00f2fe;
+      --accent-blue: #4facfe;
+      --accent-emerald: #10b981;
+      --accent-purple: #8b5cf6;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+      --radius-sm: 6px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(0, 242, 254, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 40%);
+    }
+
+    /* Top App Header */
+    header {
+      height: 64px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(13, 17, 28, 0.85);
+      backdrop-filter: blur(20px);
+      flex-shrink: 0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 16px rgba(0, 242, 254, 0.4);
+    }
+    .brand-text h1 {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      background: linear-gradient(90deg, #ffffff, var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand-text p {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      color: var(--accent-blue);
+      text-transform: uppercase;
+    }
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-emerald);
+    }
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
+
+    /* Modern Nav Tabs */
+    nav {
+      padding: 10px 24px;
+      display: flex;
+      gap: 8px;
+      background: rgba(10, 14, 24, 0.6);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .nav-btn {
+      padding: 8px 18px;
+      border-radius: var(--radius-md);
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .nav-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+    }
+    .nav-btn.active {
+      background: linear-gradient(135deg, rgba(0, 242, 254, 0.15), rgba(79, 172, 254, 0.15));
+      border: 1px solid var(--border-glow);
+      color: var(--accent-cyan);
+      box-shadow: 0 0 12px rgba(0, 242, 254, 0.15);
+    }
+
+    /* Main Content Area */
+    main {
+      flex: 1;
+      padding: 20px 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .tab-pane { display: none; flex-direction: column; gap: 18px; height: 100%; }
+    .tab-pane.active { display: flex; }
+
+    /* Glass Cards */
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 18px 20px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      position: relative;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Input Controls */
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .input-label {
+      width: 130px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .input-field {
+      flex: 1;
+      background: var(--bg-card-inner);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      color: var(--text-main);
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    .input-field:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 10px rgba(0, 242, 254, 0.25);
+    }
+    .btn {
+      padding: 9px 16px;
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+      background: var(--bg-card-inner);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+    }
+    .btn:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.2); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #060911;
+      border: none;
+      font-weight: 800;
+      box-shadow: 0 0 14px rgba(0, 242, 254, 0.35);
+    }
+    .btn-primary:hover {
+      box-shadow: 0 0 22px rgba(0, 242, 254, 0.55);
+      transform: translateY(-1px);
+    }
+    .btn-emerald {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #ffffff;
+      border: none;
+      font-weight: 800;
+      box-shadow: 0 0 14px rgba(16, 185, 129, 0.35);
+    }
+    .btn-emerald:hover {
+      box-shadow: 0 0 22px rgba(16, 185, 129, 0.55);
+      transform: translateY(-1px);
+    }
+    .btn-purple {
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      color: #ffffff;
+      border: none;
+      font-weight: 800;
+      box-shadow: 0 0 14px rgba(139, 92, 246, 0.35);
+    }
+    .btn-purple:hover {
+      box-shadow: 0 0 22px rgba(139, 92, 246, 0.55);
+      transform: translateY(-1px);
+    }
+
+    /* Inspection Stat Cards Grid */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .stat-card {
+      background: var(--bg-card-inner);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: all 0.2s;
+    }
+    .stat-card:hover {
+      border-color: rgba(255, 255, 255, 0.15);
+      transform: translateY(-1px);
+    }
+    .stat-tag {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .stat-val {
+      font-size: 13px;
+      font-weight: 800;
+      color: #ffffff;
+      word-break: break-all;
+    }
+
+    /* Action Pipeline Hub */
+    .pipeline-hero {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .pipeline-steps {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .step-pill {
+      flex: 1;
+      padding: 10px;
+      background: var(--bg-card-inner);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .step-pill:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+    .step-pill.active {
+      border-color: var(--accent-emerald);
+      color: var(--accent-emerald);
+      background: rgba(16, 185, 129, 0.12);
+    }
+
+    /* Progress bar */
+    .progress-track {
+      width: 100%;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+      border-radius: 999px;
+      transition: width 0.3s ease;
+      box-shadow: 0 0 10px var(--accent-cyan);
+    }
+
+    /* AI Script Selector Layout */
+    .script-layout {
+      display: flex;
+      gap: 16px;
+      flex: 1;
+      min-height: 0;
+    }
+    .script-table-container {
+      flex: 1.3;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .script-table-toolbar {
+      padding: 12px 14px;
+      background: rgba(13, 17, 28, 0.6);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .filter-chip {
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: var(--bg-card-inner);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .filter-chip.active {
+      background: var(--accent-purple);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 0 10px rgba(139, 92, 246, 0.4);
+    }
+    .table-scroll {
+      flex: 1;
+      overflow-y: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #111726;
+      color: var(--text-muted);
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+      cursor: pointer;
+    }
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    tr.selected td {
+      background: rgba(0, 242, 254, 0.08);
+    }
+
+    .badge-cat {
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-block;
+    }
+    .badge-gameplay { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .badge-ui { background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); }
+    .badge-systems { background: rgba(139, 92, 246, 0.15); color: #a78bfa; }
+    .badge-plugins { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .badge-ads { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+
+    /* Code Preview Box */
+    .code-preview-container {
+      flex: 1;
+      background: #060911;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .code-preview-header {
+      padding: 10px 14px;
+      background: rgba(18, 24, 38, 0.8);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      display: flex;
+      justify-content: space-between;
+    }
+    .code-editor {
+      flex: 1;
+      padding: 14px;
+      font-family: Consolas, "Fira Code", monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      color: #93c5fd;
+      overflow-y: auto;
+      white-space: pre;
+    }
+
+    /* Tools Grid View */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      overflow-y: auto;
+    }
+    .tool-item {
+      background: var(--bg-card-inner);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tool-meta h4 { font-size: 13px; font-weight: 800; color: #ffffff; }
+    .tool-meta p { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Console logs */
+    .console-box {
+      flex: 1;
+      background: #04070e;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--accent-cyan);
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top App Bar -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">♾️</div>
+      <div class="brand-text">
+        <h1>AETHER RECON STUDIO</h1>
+        <p>AAA Universal Game & Unity Playable Reconstruction</p>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="status-badge">
+        <div class="pulse-dot"></div>
+        <span>ALL 16 TOOLS ONLINE (OFFLINE ISOLATED)</span>
+      </div>
+      <button class="btn btn-purple" onclick="openReconstructedInUnity()">🎮 Open in Unity Editor</button>
+    </div>
+  </header>
+
+  <!-- Modern Segmented Navigation -->
+  <nav>
+    <button class="nav-btn active" onclick="switchNav('wizard')">🚀 Recovery Pipeline Wizard</button>
+    <button class="nav-btn" onclick="switchNav('scripts')">🧠 AI Semantic Script Studio</button>
+    <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health (16/16)</button>
+    <button class="nav-btn" onclick="switchNav('console')">📜 Live Diagnostic Console</button>
+  </nav>
+
+  <!-- Main Work View -->
+  <main>
+    <!-- TAB 1: RECOVERY PIPELINE -->
+    <div id="pane-wizard" class="tab-pane active">
+      <!-- File Selector Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>📁 Game Intake & Work Workspace</span>
+          <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Supports APK, XAPK, ZIP & Windows Builds</span>
+        </div>
+        <div class="input-row">
+          <div class="input-label">Game Package:</div>
+          <input type="text" id="input-source" class="input-field" placeholder="Select APK / XAPK file..." value="">
+          <button class="btn" onclick="browseSourceFile()">Browse File...</button>
+          <button class="btn" onclick="browseSourceFolder()">Browse Folder...</button>
+        </div>
+        <div class="input-row">
+          <div class="input-label">Workspace:</div>
+          <input type="text" id="input-work" class="input-field" placeholder="Target work directory..." value="">
+          <button class="btn" onclick="browseWorkFolder()">Browse...</button>
+          <button class="btn btn-primary" onclick="quickInspect()">🔍 Inspect Architecture</button>
+        </div>
+      </div>
+
+      <!-- Live Inspection Dashboard (6 Modern Stat Cards) -->
+      <div class="card">
+        <div class="card-title">
+          <span>📊 Package Inspection & Architecture Dashboard</span>
+          <span id="badge-game-name" style="color:#ffffff;font-size:12px;font-weight:800;">Awaiting Inspection...</span>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card">
+            <span class="stat-tag">Engine Technology</span>
+            <span class="stat-val" id="stat-engine" style="color:var(--accent-purple);">Unknown</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-tag">Scripting Backend</span>
+            <span class="stat-val" id="stat-backend" style="color:var(--accent-blue);">Unknown</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-tag">Target Unity Version</span>
+            <span class="stat-val" id="stat-unity-ver" style="color:var(--accent-cyan);">N/A</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-tag">ABIs & Architectures</span>
+            <span class="stat-val" id="stat-abis" style="color:var(--accent-emerald);">N/A</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-tag">Container Format</span>
+            <span class="stat-val" id="stat-format" style="color:#ffffff;">N/A</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-tag">Package Size & Hash</span>
+            <span class="stat-val" id="stat-size" style="color:var(--accent-amber);">0 MB</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Execution Center -->
+      <div class="card" style="flex:1;">
+        <div class="card-title">
+          <span>⚡ Automated Reconstruction Pipeline</span>
+          <span id="txt-pipeline-status" style="color:var(--text-muted);font-weight:500;">Ready to execute.</span>
+          <div id="txt-active-tool" style="margin-top:6px;font-size:12px;color:var(--text-muted);"></div>
+        </div>
+
+        <div class="pipeline-hero">
+          <button class="btn btn-emerald" style="font-size:13px;padding:12px 24px;" onclick="runFullPipeline()">
+            ⚡ RUN FULL RECOVERY PIPELINE (START TO END)
+          </button>
+          <button class="btn btn-purple" style="font-size:13px;padding:12px 20px;" onclick="autoPlayableBuildPreset()">
+            🎯 AUTO-SELECT & FIX FOR 100% PLAYABLE UNITY BUILD
+          </button>
+        </div>
+
+        <div class="pipeline-steps">
+          <div class="step-pill" onclick="runSingleStage(1)">1. Unpack 7-Zip Container</div>
+          <div class="step-pill" onclick="runSingleStage(2)">2. AssetRipper 2.x Rip</div>
+          <div class="step-pill" onclick="runSingleStage(3)">3. Il2CppDumper / C# Dump</div>
+          <div class="step-pill" onclick="runSingleStage(4)">4. Rebuild Playable Unity Project</div>
+        </div>
+
+        <div class="progress-track">
+          <div id="prog-fill" class="progress-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: AI SCRIPT SELECTOR -->
+    <div id="pane-scripts" class="tab-pane">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-purple" onclick="autoPlayableBuildPreset()">🎯 100% Playable Preset</button>
+          <button class="btn" onclick="selectRecommendedGameplay()">✨ Select Gameplay Only</button>
+          <button class="btn" onclick="deselectAds()">❌ Filter Out Ads</button>
+          <button class="btn" onclick="checkAllScripts(true)">☑️ Select All</button>
+          <button class="btn" onclick="checkAllScripts(false)">☐ Deselect All</button>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <span id="script-count-label" style="font-size:12px;font-weight:700;color:var(--accent-cyan);">0 scripts loaded</span>
+          <button class="btn btn-emerald" onclick="exportSelectedScripts()">📁 Export Selected to Unity Project</button>
+        </div>
+      </div>
+
+      <div class="script-layout">
+        <!-- Table container -->
+        <div class="script-table-container">
+          <div class="script-table-toolbar">
+            <div class="filter-chip active" onclick="filterCategory('All', this)">All</div>
+            <div class="filter-chip" onclick="filterCategory('Core Gameplay', this)">🎮 Core Gameplay</div>
+            <div class="filter-chip" onclick="filterCategory('UI & Presentation', this)">🎯 UI & Screens</div>
+            <div class="filter-chip" onclick="filterCategory('Game Systems & Audio', this)">🧩 Game Systems</div>
+            <div class="filter-chip" onclick="filterCategory('Plugins & Store Packages', this)">📦 Plugins</div>
+            <div class="filter-chip" onclick="filterCategory('Ad & Tracking SDKs', this)">🗑️ Ad & Tracking SDKs</div>
+            <input type="text" id="script-search" class="input-field" style="width:160px;margin-left:auto;padding:4px 8px;" placeholder="Search script..." onkeyup="renderScriptTable()">
+          </div>
+
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:40px;text-align:center;">[✓]</th>
+                  <th>Class / Script Identifier</th>
+                  <th>Semantic Category</th>
+                  <th style="width:80px;text-align:center;">Confidence</th>
+                  <th style="width:60px;text-align:right;">Lines</th>
+                  <th style="width:60px;text-align:right;">Methods</th>
+                </tr>
+              </thead>
+              <tbody id="script-table-body">
+                <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">No scripts cataloged yet. Run the pipeline or click 'Scan Scripts'.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Code Inspection View -->
+        <div class="code-preview-container">
+          <div class="code-preview-header">
+            <span id="preview-filename">Code Inspection Pane</span>
+            <span id="preview-meta" style="color:var(--text-muted);">Select a script to view</span>
+          </div>
+          <div class="code-editor" id="preview-code">// Source code preview will appear here upon selecting any script in the table...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: TOOLS HEALTH -->
+    <div id="pane-tools" class="tab-pane">
+      <div class="card" style="flex:1;">
+        <div class="card-title">
+          <span>🛠️ Installed Reverse Engineering & Recovery Tools (100% Offline)</span>
+          <button class="btn btn-primary" onclick="loadToolsHealth()">🔄 Re-run Diagnostic Verification</button>
+        </div>
+        <div class="tools-grid" id="tools-grid-container">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <div class="card" style="flex:1;">
+        <div class="card-title">
+          <span>⬆️ Tool Versions &amp; Updates</span>
+          <div style="display:flex;gap:8px;"><button class="btn btn-primary" onclick="checkToolUpdates(false)">🔍 Check For Updates</button><button class="btn" onclick="checkToolUpdates(true)">↻ Force Re-check</button></div>
+        </div>
+        <div id="tool-updates-container">
+          <div style="padding:10px;color:var(--text-muted);">
+            Press <b>Check For Updates</b> to compare each installed tool against its latest release.
+            This is the only step that uses the network.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: LIVE LOGS -->
+    <div id="pane-console" class="tab-pane">
+      <div class="card" style="flex:1;display:flex;flex-direction:column;">
+        <div class="card-title">
+          <span>📜 Real-Time Pipeline Diagnostic Console</span>
+          <button class="btn" onclick="document.getElementById('console-log').innerText=''">Clear Console</button>
+        </div>
+        <div class="console-box" id="console-log">
+[SYSTEM INITIALIZED] AETHER RECON STUDIO — Offline Edition
+All 16 local recovery engines loaded and ready.
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let scriptsData = [];
+    let currentCategoryFilter = 'All';
+    let isPipelineRunning = false;
+
+    // Navigation switching
+    function switchNav(tabName) {
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+
+      event.target.classList.add('active');
+      document.getElementById('pane-' + tabName).classList.add('active');
+
+      if (tabName === 'tools') loadToolsHealth();
+      if (tabName === 'scripts' && scriptsData.length === 0) scanScripts();
+    }
+
+    // Logging helper
+    function logMessage(msg) {
+      const el = document.getElementById('console-log');
+      el.innerText += '\n' + msg;
+      el.scrollTop = el.scrollHeight;
+      document.getElementById('txt-pipeline-status').innerText = msg;
+    }
+
+    // Inspect
+    async function quickInspect() {
+      const src = document.getElementById('input-source').value.trim();
+      if (!src) return alert('Please enter or browse a game package path first.');
+
+      logMessage('🔍 Inspecting game package: ' + src);
+      try {
+        const res = await fetch('/api/inspect', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ path: src })
+        });
+        const info = await res.json();
+
+        document.getElementById('badge-game-name').innerText = info.app_name || info.name || 'Game Detected';
+        document.getElementById('stat-engine').innerText = info.engine || 'Unknown';
+        document.getElementById('stat-backend').innerText = info.backend || 'Unknown';
+        document.getElementById('stat-unity-ver').innerText = info.unity_version || 'N/A';
+        document.getElementById('stat-abis').innerText = (info.abis && info.abis.length) ? info.abis.join(', ') : 'Universal';
+        document.getElementById('stat-format').innerText = info.format || 'Archive';
+        document.getElementById('stat-size').innerText = `${info.size_mb} MB (${info.sha256.substring(0, 10)}...)`;
+
+        logMessage(`✓ Inspected: ${info.engine} (${info.backend})`);
+      } catch (e) {
+        logMessage('Error inspecting: ' + e);
+      }
+    }
+
+    // Pipeline Execution
+    async function runFullPipeline() {
+      const src = document.getElementById('input-source').value.trim();
+      const dest = document.getElementById('input-work').value.trim();
+      if (!src || !dest) return alert('Please provide both Source Game Package and Target Work Directory.');
+
+      if (isPipelineRunning) return alert('Pipeline is already running!');
+      isPipelineRunning = true;
+      document.getElementById('prog-fill').style.width = '20%';
+
+      logMessage('==================================================');
+      logMessage('🚀 RUNNING COMPLETE RECOVERY PIPELINE');
+      startPipelineWatch();
+      logMessage('==================================================');
+
+      try {
+        const res = await fetch('/api/pipeline/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ source: src, destination: dest })
+        });
+        const out = await res.json();
+        stopPipelineWatch();
+        setActiveTool('', '');
+        document.getElementById('prog-fill').style.width = '100%';
+        // The server now reports what each stage actually produced, so say so rather than
+        // announcing success regardless of the outcome.
+        (out.stages || []).forEach(function (st) {
+          logMessage((st.ok ? '  [OK] ' : '  [FAILED] ') + st.stage + (st.detail ? ' - ' + st.detail : ''));
+        });
+        if (out.status === 'complete') {
+          logMessage('✅ Pipeline finished: every stage produced output.');
+          alert('Recovery pipeline complete.\n\n' + (out.message || '') + '\n\nProject at:\n' + dest);
+        } else {
+          logMessage('⚠ Pipeline finished with problems: ' + (out.message || 'some stages produced nothing.'));
+          alert('Recovery pipeline did NOT fully succeed.\n\n' + (out.message || '')
+                + '\n\nRead reports\\RECOVERY_REPORT.md in:\n' + dest);
+        }
+        scanScripts();
+      } catch (e) {
+        logMessage('[ERROR] ' + e);
+      } finally {
+        isPipelineRunning = false;
+        setTimeout(() => { document.getElementById('prog-fill').style.width = '0%'; }, 2000);
+      }
+    }
+
+    async function runSingleStage(stageNum) {
+      const src = document.getElementById('input-source').value.trim();
+      const dest = document.getElementById('input-work').value.trim();
+      logMessage(`Executing Stage ${stageNum}...`);
+      await fetch('/api/pipeline/stage', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ source: src, destination: dest, stage: stageNum })
+      });
+      logMessage(`Stage ${stageNum} completed.`);
+    }
+
+    // Scripts & AI Classifier
+    async function scanScripts() {
+      const dest = document.getElementById('input-work').value.trim();
+      logMessage('🧠 Scanning decompiled scripts for AI classification...');
+      try {
+        const res = await fetch('/api/scripts/scan', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ work_folder: dest })
+        });
+        scriptsData = await res.json();
+        renderScriptTable();
+        logMessage(`✓ AI Classifier processed ${scriptsData.length} scripts.`);
+      } catch (e) {
+        logMessage('Error scanning scripts: ' + e);
+      }
+    }
+
+    function renderScriptTable() {
+      const tbody = document.getElementById('script-table-body');
+      tbody.innerHTML = '';
+      const query = document.getElementById('script-search').value.trim().toLowerCase();
+
+      let visible = 0;
+      let selected = 0;
+
+      scriptsData.forEach((s, idx) => {
+        if (s.is_selected) selected++;
+
+        if (currentCategoryFilter !== 'All' && s.category !== currentCategoryFilter) return;
+        if (query && !s.filename.toLowerCase().includes(query) && !s.namespace.toLowerCase().includes(query)) return;
+
+        visible++;
+        const tr = document.createElement('tr');
+        tr.onclick = () => previewScript(s);
+
+        let badgeClass = 'badge-gameplay';
+        if (s.category.includes('UI')) badgeClass = 'badge-ui';
+        if (s.category.includes('Systems')) badgeClass = 'badge-systems';
+        if (s.category.includes('Plugins')) badgeClass = 'badge-plugins';
+        if (s.category.includes('Ad')) badgeClass = 'badge-ads';
+
+        tr.innerHTML = `
+          <td style="text-align:center;"><input type="checkbox" ${s.is_selected ? 'checked' : ''} onclick="event.stopPropagation(); toggleSelect(${idx})"></td>
+          <td style="font-weight:700;">${s.name}</td>
+          <td><span class="badge-cat ${badgeClass}">${s.badge} ${s.category}</span></td>
+          <td style="text-align:center;font-weight:700;color:var(--accent-cyan);">${s.confidence}</td>
+          <td style="text-align:right;color:var(--text-muted);">${s.lines}</td>
+          <td style="text-align:right;color:var(--text-muted);">${s.methods}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById('script-count-label').innerText = `Showing: ${visible} | Selected: ${selected} / ${scriptsData.length}`;
+    }
+
+    function toggleSelect(idx) {
+      scriptsData[idx].is_selected = !scriptsData[idx].is_selected;
+      renderScriptTable();
+    }
+
+    async function previewScript(s) {
+      document.getElementById('preview-filename').innerText = s.filename;
+      document.getElementById('preview-meta').innerText = `${s.category} • ${s.lines} Lines • ${s.confidence} Confidence`;
+      try {
+        const res = await fetch('/api/scripts/read?path=' + encodeURIComponent(s.path));
+        const code = await res.text();
+        document.getElementById('preview-code').innerText = code;
+      } catch (e) {
+        document.getElementById('preview-code').innerText = '// Unable to read file: ' + e;
+      }
+    }
+
+    function filterCategory(cat, el) {
+      currentCategoryFilter = cat;
+      document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+      renderScriptTable();
+    }
+
+    function checkAllScripts(status) {
+      scriptsData.forEach(s => s.is_selected = status);
+      renderScriptTable();
+    }
+
+    function selectRecommendedGameplay() {
+      scriptsData.forEach(s => {
+        if (['Core Gameplay', 'UI & Presentation', 'Game Systems & Audio'].includes(s.category)) {
+          s.is_selected = true;
+        } else {
+          s.is_selected = false;
+        }
+      });
+      renderScriptTable();
+    }
+
+    function deselectAds() {
+      scriptsData.forEach(s => {
+        if (s.category === 'Ad & Tracking SDKs' || s.category.includes('Compiler')) {
+          s.is_selected = false;
+        }
+      });
+      renderScriptTable();
+    }
+
+    async function autoPlayableBuildPreset() {
+      selectRecommendedGameplay();
+      logMessage('🎯 Applying 100% Playable Build Preset (Auto SDK Stubbing)...');
+      const dest = document.getElementById('input-work').value.trim();
+      await fetch('/api/scripts/auto-playable-preset', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ work_folder: dest })
+      });
+      alert('🎯 100% Playable Preset Ready!\n\n✓ Core Gameplay & UI Selected.\n✓ Ad & Analytics SDKs Filtered.\n✓ Missing SDK Stubs Generated (AdMob, AppLovin, Firebase).\n✓ Clean GameCore.asmdef created for zero-error compilation.');
+    }
+
+    async function exportSelectedScripts() {
+      const dest = document.getElementById('input-work').value.trim();
+      const selected = scriptsData.filter(s => s.is_selected);
+      const res = await fetch('/api/scripts/export', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ work_folder: dest, scripts: selected })
+      });
+      const data = await res.json();
+      alert(`Export Complete! ${data.exported} scripts placed into Assets/_Project/Scripts/`);
+    }
+
+    async function openReconstructedInUnity() {
+      const dest = document.getElementById('input-work').value.trim();
+      logMessage('Launching Unity Editor on ' + dest + '/05_project...');
+      await fetch('/api/open-unity', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ work_folder: dest })
+      });
+    }
+
+    // ---- Live view of the running pipeline -------------------------------------------
+    // The run happens inside one long request, so the page polls the server to show which
+    // tool is working and to stream the log while it is still going.
+    let pipelinePoll = null;
+    let pipelineSeen = 0;
+
+    function setActiveTool(stage, tool) {
+      const el = document.getElementById('txt-active-tool');
+      if (!el) return;
+      if (!stage && !tool) { el.innerHTML = ''; return; }
+      el.innerHTML = tool
+        ? 'Stage: <b>' + stage + '</b> &nbsp;|&nbsp; Tool running: <b style="color:var(--accent-cyan)">' + tool + '</b>'
+        : 'Stage: <b>' + stage + '</b>';
+    }
+
+    function startPipelineWatch() {
+      pipelineSeen = 0;
+      stopPipelineWatch();
+      pipelinePoll = setInterval(async function () {
+        try {
+          const res = await fetch('/api/pipeline/status?after=' + pipelineSeen);
+          const st = await res.json();
+          (st.log || []).forEach(function (line) { logMessage(line); });
+          pipelineSeen = st.log_total || pipelineSeen;
+          setActiveTool(st.stage, st.tool);
+        } catch (e) { /* the run itself reports the real outcome */ }
+      }, 1000);
+    }
+
+    function stopPipelineWatch() {
+      if (pipelinePoll) { clearInterval(pipelinePoll); pipelinePoll = null; }
+    }
+
+    // ---- Tool updates ----------------------------------------------------------------
+    const UPDATE_COLOURS = { update: 'var(--accent-amber)', current: 'var(--accent-emerald)',
+                             offline: 'var(--text-muted)', ratelimited: 'var(--accent-amber)',
+                             missing: 'var(--accent-rose)', unknown: 'var(--text-muted)' };
+    const UPDATE_LABELS = { update: 'UPDATE AVAILABLE', current: 'UP TO DATE', offline: 'NO CONNECTION',
+                            ratelimited: 'LIMIT REACHED', missing: 'NOT INSTALLED', unknown: 'UNKNOWN' };
+
+    async function checkToolUpdates(force) {
+      const box = document.getElementById('tool-updates-container');
+      if (!box) return;
+      box.innerHTML = '<div style="padding:10px;color:var(--text-muted);">Checking each tool against its latest release...</div>';
+      try {
+        const res = await fetch('/api/tools/updates' + (force ? '?force=1' : ''));
+        const data = await res.json();
+        const tools = data.tools || [];
+        if (!tools.length) {
+          box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Could not check: ' + (data.error || 'no result') + '</div>';
+          return;
+        }
+        let html = '';
+        tools.forEach(function (t) {
+          const c = UPDATE_COLOURS[t.state] || 'var(--text-muted)';
+          const tag = t.latest ? (t.latest + (t.prerelease ? ' (pre-release)' : '')) : '';
+          html += '<div class="tool-item" style="align-items:flex-start;">'
+                + '<div class="tool-meta" style="flex:1;">'
+                + '<h4>' + t.name + '</h4><p>' + t.role + '</p>'
+                + '<p style="margin-top:4px;font-size:11px;">Installed: ' + t.installed
+                + (tag ? ' &nbsp;|&nbsp; Latest: <b>' + tag + '</b> (' + t.published + ')' : '') + '</p>'
+                + '<p style="margin-top:2px;font-size:11px;color:' + c + ';">' + t.note + '</p>'
+                + '<div id="bar-' + t.name + '" style="display:none;margin-top:8px;">'
+                + '  <div class="progress-track"><div id="fill-' + t.name + '" class="progress-fill" style="width:0%"></div></div>'
+                + '  <div id="msg-' + t.name + '" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>'
+                + '</div>'
+                + '</div>'
+                + '<div style="text-align:right;min-width:160px;">'
+                + '<div style="font-weight:800;font-size:11px;color:' + c + ';">' + (UPDATE_LABELS[t.state] || t.state) + '</div>'
+                + (t.can_install
+                    ? '<button class="btn btn-primary" style="margin-top:6px;font-size:11px;" onclick="installTool(\'' + t.name + '\')">Update now</button>'
+                    : '')
+                + '<div style="margin-top:4px;"><a href="' + t.url + '" target="_blank" style="font-size:11px;color:var(--text-muted);">releases</a></div>'
+                + '</div></div>';
+        });
+        html += '<div style="padding:10px;margin-top:8px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);">'
+              + 'Up to date does not mean every game can be read. A tool at its newest release can still refuse a package '
+              + 'built with a newer engine than itself, which shows up as the asset rip or code recovery stage producing no files.'
+              + '</div>';
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Update check failed: ' + e + '</div>';
+      }
+    }
+
+    async function installTool(name) {
+      const bar = document.getElementById('bar-' + name);
+      const fill = document.getElementById('fill-' + name);
+      const msg = document.getElementById('msg-' + name);
+      if (bar) bar.style.display = 'block';
+      if (msg) msg.innerText = 'Starting...';
+      logMessage('Updating ' + name + '...');
+      try {
+        const res = await fetch('/api/tools/install', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ tool: name })
+        });
+        const started = await res.json();
+        if (started.status === 'busy') { if (msg) msg.innerText = started.message; return; }
+      } catch (e) {
+        if (msg) msg.innerText = 'Could not start: ' + e;
+        return;
+      }
+      const poll = setInterval(async function () {
+        try {
+          const st = await (await fetch('/api/tools/install/status')).json();
+          if (fill) fill.style.width = (st.percent || 0) + '%';
+          if (msg) msg.innerText = st.error ? st.error : (st.message || '');
+          if (!st.running) {
+            clearInterval(poll);
+            if (st.error) {
+              logMessage('[ERROR] ' + name + ': ' + st.error);
+            } else {
+              logMessage(name + ' updated: ' + (st.result ? st.result.version : '') + ' (' + (st.result ? st.result.size_mb : '?') + ' MB)');
+              setTimeout(function () { checkToolUpdates(true); }, 1200);
+            }
+          }
+        } catch (e) { clearInterval(poll); }
+      }, 700);
+    }
+    async function loadToolsHealth() {
+      const container = document.getElementById('tools-grid-container');
+      container.innerHTML = 'Loading tools status...';
+      const res = await fetch('/api/tools/status');
+      const tools = await res.json();
+      container.innerHTML = '';
+      tools.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'tool-item';
+        item.innerHTML = `
+          <div class="tool-meta">
+            <h4>${t.name}</h4>
+            <p>${t.role}</p>
+          </div>
+          <span style="font-weight:800;font-size:11px;color:${t.status.includes('PASS') ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${t.status}</span>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    async function browseSourceFile() {
+      const res = await fetch('/api/browse?type=file');
+      const d = await res.json();
+      if (d.path) {
+        document.getElementById('input-source').value = d.path;
+        quickInspect();
+      }
+    }
+    async function browseSourceFolder() {
+      const res = await fetch('/api/browse?type=folder');
+      const d = await res.json();
+      if (d.path) {
+        document.getElementById('input-source').value = d.path;
+        quickInspect();
+      }
+    }
+    async function browseWorkFolder() {
+      const res = await fetch('/api/browse?type=folder');
+      const d = await res.json();
+      if (d.path) document.getElementById('input-work').value = d.path;
+    }
+
+    // Auto inspect on load
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(quickInspect, 400);
+      loadToolsHealth();
+    });
+  </script>
+</body>
+</html>

@@ -1,2 +1,6 @@
 .tools/
 recovery-output/
+__pycache__/
+*.log
+update_cache.json
+*.before-*

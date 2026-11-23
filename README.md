@@ -61,4 +61,14 @@ Choose the report entry with `-InputNumber` (one-based, defaults to 1). A custom
 
 Review the generated changes in the matching Unity Editor and test the requested behavior in Play Mode before bringing changes back into the recovered project. Craft Anything is an early-alpha tool and generated gameplay code needs review.
 
+## Aether Recon Studio (desktop UI, experimental)
+
+The `studio/` folder holds a Python desktop/web front end for guided recovery of APK/XAPK and Windows builds: scanner, recovery engine, Ghidra symbol import, tool update checker and a playable-scaffold generator. It is separate from the PowerShell CLI above and does not share its `.tools` cache.
+
+```powershell
+.\studio\Run_Recovery_Studio.bat
+```
+
+Requirements: Windows, Python 3.10+ with Tk, and the recovery tools (AssetRipper, AssetStudioMod, Il2CppDumper, Cpp2IL, ILSpy, JADX, Ghidra, 7-Zip) installed in the layout `studio/env.ps1` expects. The studio treats the parent of `studio/` as its tool root. Adjust `env.ps1` and the paths in `server.py` to match your machine. It has been tested only on the author's machine.
+
 This repository's code is MIT-licensed. Downloaded tools retain their upstream licenses. Keep builds and recovery outputs private.
