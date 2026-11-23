@@ -252,7 +252,9 @@ Work out these numbers, and write them to `reports\\AUDIT.json` and a readable `
 
 {_audit_items(info)}
 
-Run the audit once after recovery (the "before" numbers) and again after every repair round.
+Run the audit once after recovery (the "before" numbers) and again after every repair round. The studio also runs
+its own audit on your result afterwards (`reports\\AUDIT_05_project.json` and `AUDIT_06_playable.json`) and compares the
+two; only the studio's numbers are trusted, so do not edit those files.
 
 ## Repair what the evidence supports (bounded)
 
