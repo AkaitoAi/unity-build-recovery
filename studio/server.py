@@ -79,6 +79,7 @@ PIPELINE_STATE = {
     "results": [],
     "status": "idle",
     "message": "",
+    "kind": "recovery",    # recovery, stage or audit: what the activity bar should call this run
     "plan": [],            # names of the stages this run will go through, in order
     "stage_index": 0,      # 1-based number of the stage running now
     "stage_total": 0,
@@ -194,6 +195,7 @@ def pipeline_snapshot(after: int = 0) -> dict:
             "results": list(PIPELINE_STATE["results"]),
             "log": PIPELINE_STATE["log"][start:],
             "log_total": total,
+            "kind": PIPELINE_STATE["kind"],
             "plan": list(PIPELINE_STATE["plan"]),
             "stage_index": PIPELINE_STATE["stage_index"],
             "stage_total": PIPELINE_STATE["stage_total"],
@@ -234,7 +236,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             return False
         if urllib.parse.urlparse(self.path).path.startswith("/api/"):
             supplied = self.headers.get("X-Studio-Token", "")
-            if not secrets.compare_digest(supplied, SESSION_TOKEN):
+            if not secrets.compare_digest(supplied.encode("utf-8", "replace"), SESSION_TOKEN.encode("utf-8")):
                 return False
         return True
 
@@ -260,6 +262,17 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._request_allowed():
             return self._deny()
+        try:
+            self._dispatch_get()
+        except ValueError as exc:
+            self.send_json({"status": "error", "message": str(exc)}, status=400)
+        except Exception as exc:
+            try:
+                self.send_json({"status": "error", "message": f"{type(exc).__name__}: {exc}"}, status=500)
+            except Exception:
+                pass
+
+    def _dispatch_get(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -433,7 +446,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                             "stages": [], "failed": []}, status=409)
             return
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
-                     message="", results=[], log=[], plan=[], stage_index=0, stage_total=0,
+                     message="", results=[], log=[], kind="recovery", plan=[], stage_index=0, stage_total=0,
                      started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
         try:
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
@@ -523,7 +536,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             return
         try:
             pipeline_set(running=True, stage=f"Stage {stage}", tool="", status="running", message="", results=[], log=[],
-                         plan=[f"Stage {stage}"], stage_index=1, stage_total=1,
+                         kind="stage", plan=[f"Stage {stage}"], stage_index=1, stage_total=1,
                          started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
             info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
@@ -652,11 +665,14 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
             return
         try:
-            pipeline_set(running=True, stage=f"Audit {target}", tool="", status="running", message="", results=[], log=[],
-                         plan=[f"Audit {target}"], stage_index=1, stage_total=1,
+            # The stage list and log of the last recovery stay on screen: only the run state changes.
+            pipeline_set(running=True, kind="audit", stage=f"Audit {target}", tool="", status="running", message="",
                          started_at=time.time(), stage_started_at=time.time(), finished_at=0.0)
             report = audit.run_audit(work_folder, target)
             pipeline_set(stage="Finished", status="complete", message=report["summary"]["level"], finished_at=time.time())
+        except Exception as exc:
+            pipeline_set(stage="Failed", status="error", message=f"{type(exc).__name__}: {exc}", finished_at=time.time())
+            raise
         finally:
             release_run()
         self.send_json(report)

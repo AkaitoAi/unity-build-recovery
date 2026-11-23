@@ -24,7 +24,7 @@ def meta(guid):
 
 
 def make_unity_project(root, fixed=False):
-    scene = "%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n"
+    scene = "%YAML 1.1\n--- !u!1 &10\nGameObject:\n  m_Name: Root\n--- !u!114 &1\nMonoBehaviour:\n"
     scene += f"  m_Script: {{fileID: 11500000, guid: {GOOD}, type: 3}}\n"
     if not fixed:
         scene += "  m_Script: {fileID: 0}\n  m_Script: {fileID: 0}\n"
@@ -107,10 +107,10 @@ class UnityAuditTests(unittest.TestCase):
         make_unity_project(fixed, fixed=True)
         report = audit.run_audit(self.work, "06_playable")
         self.assertEqual(report["summary"]["total"], 0)
-        self.assertEqual(report["summary"]["level"], "L1 audit clean")
+        self.assertEqual(report["summary"]["level"], "L1 audit clean with caveats")   # dump.cs still lists Enemy with no source
         comparison = report["comparison"]
         self.assertEqual((comparison["before_total"], comparison["after_total"]), (8, 0))
-        for name in ("AUDIT.json", "AUDIT.md", "AUDIT_05_project.json", "AUDIT_06_playable.json"):
+        for name in ("STUDIO_AUDIT.json", "STUDIO_AUDIT.md", "STUDIO_AUDIT_05_project.json", "STUDIO_AUDIT_06_playable.json"):
             self.assertTrue(os.path.exists(os.path.join(self.work, "reports", name)), name)
         self.assertEqual(audit.load_latest(self.work)["target"], "06_playable")
 
