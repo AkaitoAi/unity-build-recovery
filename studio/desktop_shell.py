@@ -12,6 +12,7 @@ Launched by Run_Recovery_Studio.bat through pythonw.exe, so no console appears.
 """
 
 import os
+import glob
 import socket
 import subprocess
 import sys
@@ -39,7 +40,7 @@ BROWSERS = [
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
 ]
 
-TOOLS_ROOT = os.path.dirname(APP_DIR)
+from paths import TOOLS_ROOT
 
 
 def studio_environment():
@@ -57,11 +58,13 @@ def studio_environment():
     env["ANDROID_SDK_ROOT"] = android
     env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
 
-    java_home = r"C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot"
-    if os.path.isdir(java_home):
-        env["JAVA_HOME"] = java_home
-    ndk = os.path.join(android, "ndk", "27.2.12479018")
-    if os.path.isdir(ndk):
+    if not os.path.isdir(env.get("JAVA_HOME", "")):
+        jdks = sorted(glob.glob(r"C:\Program Files\Eclipse Adoptium\jdk-*"), reverse=True)
+        if jdks:
+            env["JAVA_HOME"] = jdks[0]
+    ndks = sorted(glob.glob(os.path.join(android, "ndk", "*")), reverse=True)
+    ndk = ndks[0] if ndks else ""
+    if ndk and os.path.isdir(ndk):
         env["ANDROID_NDK_HOME"] = ndk
 
     folders = [

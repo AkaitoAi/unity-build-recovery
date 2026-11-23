@@ -780,7 +780,7 @@ class ModernRecoveryStudio(tk.Tk):
             ("FFmpeg Studio", "Audio / Video Codec Transcoder", os.path.join(TOOLS_ROOT, "ffmpeg", "bin", "ffmpeg.exe")),
             ("Python 3.12 (UnityPy)", "Asset Serialization Scripting", os.path.join(TOOLS_ROOT, "pyenv", "Scripts", "python.exe")),
             (".NET 8 SDK", "C# Execution & Tooling Runtime", os.path.join(TOOLS_ROOT, "dotnet8", "dotnet.exe")),
-            ("Android NDK & Clang", "Native C/C++ Build Toolchain", os.path.join(TOOLS_ROOT, "android-sdk", "ndk", "27.2.12479018", "ndk-build.cmd")),
+            ("Android NDK & Clang", "Native C/C++ Build Toolchain", os.path.join(TOOLS_ROOT, "android-sdk", "ndk")),
             ("Android SDK (aapt2/adb)", "Android Manifest & APK Parsing", os.path.join(TOOLS_ROOT, "android-sdk", "platform-tools", "adb.exe")),
             ("Unity Editor (Host)", "Active Matching Editor Target", r"C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Unity.exe")
         ]

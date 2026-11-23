@@ -63,12 +63,30 @@ Review the generated changes in the matching Unity Editor and test the requested
 
 ## Aether Recon Studio (desktop UI, experimental)
 
-The `studio/` folder holds a Python desktop/web front end for guided recovery of APK/XAPK and Windows builds: scanner, recovery engine, Ghidra symbol import, tool update checker and a playable-scaffold generator. It is separate from the PowerShell CLI above and does not share its `.tools` cache.
+The `studio/` folder holds a separate Windows tool: a local Python UI for guided recovery of APK/XAPK and Windows Unity builds. It has an input scanner, a recovery pipeline (unpack, AssetRipper, Il2CppDumper/Cpp2IL, JADX), Ghidra symbol import, a script classifier that picks gameplay scripts, a tool-update checker and a scaffold generator that builds a Unity project from the results. It does not call `Recover.ps1`, share its `.tools` cache or use its report format. Use it only on builds you own or have permission to recover, like the CLI.
+
+Requirements: Windows x64, Python 3.10+ with Tk (the python.org installer includes it), and Edge or Chrome for the window. No pip packages are needed.
+
+Tool root: the studio looks for tools in `RE_TOOLS`, else the folder above `studio/` if it contains `7-Zip`, else `<repo>\.tools`. Folder names it expects there:
+
+| Folder | Needed for |
+| --- | --- |
+| `7-Zip\7z.exe` | Unpacking (required) |
+| `AssetRipper\AssetRipper.GUI.Free.exe` | Asset export |
+| `AssetStudioModCLI\AssetStudioModCLI_net9_win64\` | Asset inventory |
+| `Il2CppDumper\`, `Cpp2IL\` | IL2CPP recovery |
+| `jadx\bin\jadx.bat` and a JDK 21+ under `C:\Program Files\Eclipse Adoptium` | Java source |
+| `ghidra\`, `android-sdk\ndk\<version>` | Symbol import (optional) |
+| `ILSpy\`, `llvm\`, `ffmpeg\` | Optional |
+
+The Tools tab shows PASS or FAIL for each. `studio\env.ps1` is only for your own PowerShell sessions: dot-source it to put these tools on PATH. The launcher does not need it.
 
 ```powershell
 .\studio\Run_Recovery_Studio.bat
 ```
 
-Requirements: Windows, Python 3.10+ with Tk, and the recovery tools (AssetRipper, AssetStudioMod, Il2CppDumper, Cpp2IL, ILSpy, JADX, Ghidra, 7-Zip) installed in the layout `studio/env.ps1` expects. The studio treats the parent of `studio/` as its tool root. Adjust `env.ps1` and the paths in `server.py` to match your machine. It has been tested only on the author's machine.
+The launcher starts the server on `127.0.0.1:5899` and opens it in a plain app window. It hides the console, so if nothing appears, run `python studio\desktop_shell.py` in a terminal to see errors. Logs go to `studio\studio_server.log`.
+
+Unity editor paths and a default Unity version (2022.3.62f3, 6000.3.21f1) are set in `unity_playable_scaffolder.py` and `server.py`. Edit them if your editors differ. The server rejects requests from other web pages, and tool downloads are installed only when the release publishes a SHA-256 digest that matches. It has been tested only on the author's machine.
 
 This repository's code is MIT-licensed. Downloaded tools retain their upstream licenses. Keep builds and recovery outputs private.

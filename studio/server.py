@@ -17,11 +17,11 @@ from tkinter import filedialog
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(APP_DIR, "web")
-TOOLS_ROOT = os.path.dirname(APP_DIR)
 
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
+from paths import TOOLS_ROOT
 from scanner import inspect_game
 from script_ai_selector import scan_and_classify_directory, export_selected_scripts, ScriptItem
 from recovery_engine import RecoveryPipeline
@@ -129,7 +129,23 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         # Silent standard HTTP request logging to keep console clean
         pass
 
+    def _request_allowed(self):
+        """Blocks DNS rebinding (bad Host) and cross-site pages (foreign Origin)."""
+        allowed_hosts = (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
+        if self.headers.get("Host", "") not in allowed_hosts:
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            return False
+        return True
+
+    def _deny(self):
+        self.send_response(403)
+        self.end_headers()
+
     def do_GET(self):
+        if not self._request_allowed():
+            return self._deny()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -159,6 +175,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._request_allowed():
+            return self._deny()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -199,7 +217,6 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
     def send_json(self, data: dict, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
@@ -349,7 +366,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
         open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
         if os.path.exists(open_bat):
-            subprocess.Popen([open_bat], shell=True)
+            os.startfile(open_bat)
             self.send_json({"status": "launched", "method": "Open_In_Unity.bat"})
             return
 
@@ -402,7 +419,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
     def handle_script_read(self, query):
         qs = urllib.parse.parse_qs(query)
         f_path = qs.get("path", [""])[0]
-        if os.path.exists(f_path):
+        if os.path.splitext(f_path)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md"):
+            f_path = ""
+        if f_path and os.path.isfile(f_path):
             try:
                 with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read(60000)
@@ -431,7 +450,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             {"name": "FFmpeg Studio", "role": "Audio / Video Codec Transcoder", "path": os.path.join(TOOLS_ROOT, "ffmpeg", "bin", "ffmpeg.exe")},
             {"name": "Python 3.12 (UnityPy)", "role": "Asset Serialization Scripting", "path": os.path.join(TOOLS_ROOT, "pyenv", "Scripts", "python.exe")},
             {"name": ".NET 8 SDK", "role": "C# Execution & Tooling Runtime", "path": os.path.join(TOOLS_ROOT, "dotnet8", "dotnet.exe")},
-            {"name": "Android NDK & Clang", "role": "Native C/C++ Build Toolchain", "path": os.path.join(TOOLS_ROOT, "android-sdk", "ndk", "27.2.12479018", "ndk-build.cmd")},
+            {"name": "Android NDK & Clang", "role": "Native C/C++ Build Toolchain", "path": os.path.join(TOOLS_ROOT, "android-sdk", "ndk")},
             {"name": "Android SDK (aapt2/adb)", "role": "Android Manifest & APK Parsing", "path": os.path.join(TOOLS_ROOT, "android-sdk", "platform-tools", "adb.exe")},
             {"name": "Unity Editor (Host)", "role": "Active Matching Editor Target", "path": r"C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Unity.exe"}
         ]

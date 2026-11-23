@@ -12,7 +12,7 @@ import io
 import hashlib
 from typing import Dict, Any, List
 
-TOOLS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from paths import TOOLS_ROOT
 SEVEN_ZIP = os.path.join(TOOLS_ROOT, "7-Zip", "7z.exe")
 
 def calculate_sha256(filepath: str) -> str:
@@ -76,7 +76,7 @@ def inspect_archive_package(archive_path: str, ext: str, info: Dict[str, Any]):
                         m_data = json.loads(z.read("manifest.json").decode("utf-8", errors="ignore"))
                         info["app_id"] = m_data.get("package_name", "")
                         info["app_name"] = m_data.get("name", "")
-                        info["unity_version"] = m_data.get("version_name", "")
+                        info["app_version"] = m_data.get("version_name", "")
                     except Exception:
                         pass
 

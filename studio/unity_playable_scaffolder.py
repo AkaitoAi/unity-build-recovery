@@ -201,7 +201,7 @@ echo ===========================================================================
 echo.
 echo Starting local offline game server on http://localhost:8088...
 start "" "http://localhost:8088"
-python -m http.server 8088
+python -m http.server 8088 --bind 127.0.0.1
 pause
 """
     with open(runner_bat, "w", encoding="utf-8") as f:

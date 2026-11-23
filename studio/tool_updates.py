@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-TOOLS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from paths import TOOLS_ROOT
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(APP_DIR, "update_cache.json")
 CACHE_SECONDS = 6 * 3600
@@ -201,6 +201,7 @@ def _newest_release(repo):
         "prerelease": bool(newest.get("prerelease")),
         "download": assets[0]["browser_download_url"] if assets else "",
         "download_name": assets[0]["name"] if assets else "",
+        "sha256": (assets[0].get("digest") or "").removeprefix("sha256:").lower() if assets else "",
     }
 
 
@@ -303,7 +304,7 @@ def _install_npm(tool, report):
 
     report(10, f"Installing {tool['npm']} with npm (this can take a few minutes)...")
     result = subprocess.run(
-        [npm, "install", f"{tool['npm']}@latest", "--engine-strict=false", "--no-audit", "--no-fund"],
+        [npm, "install", f"{tool['npm']}@latest", "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
         cwd=folder, capture_output=True, text=True, errors="replace", timeout=2700)
     if result.returncode != 0:
         tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
@@ -362,11 +363,25 @@ def install(name, progress=None):
                 report(40, f"Downloading {got / 1e6:.1f} MB")
     blob = b"".join(chunks)
 
+    expected = latest.get("sha256", "")
+    if not expected:
+        raise RuntimeError(f"{tool['name']} {latest['tag']} publishes no SHA-256 digest, so the download "
+                           f"cannot be verified; install it by hand from {latest['url']}")
+    import hashlib
+    if hashlib.sha256(blob).hexdigest() != expected:
+        raise RuntimeError(f"{latest['download_name']} failed SHA-256 verification; nothing was installed")
+
     report(84, "Installing...")
     if latest["download_name"].lower().endswith(".zip"):
         target = os.path.join(TOOLS_ROOT, f"{tool['name'].lower()}-{safe_tag}")
         os.makedirs(target, exist_ok=True)
-        zipfile.ZipFile(__import__("io").BytesIO(blob)).extractall(target)
+        import io
+        base = os.path.realpath(target)
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            for member in archive.namelist():
+                if not os.path.realpath(os.path.join(base, member)).startswith(base + os.sep):
+                    raise RuntimeError(f"unsafe path in archive: {member}")
+            archive.extractall(target)
     else:
         folder = tool.get("newest_file_in") or os.path.dirname(tool["marker"]) or TOOLS_ROOT
         if not os.path.isdir(folder):

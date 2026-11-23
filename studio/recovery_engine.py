@@ -258,7 +258,7 @@ class RecoveryPipeline:
             self.install_dummy_dlls(dummy_dir)
 
         # Unity Game: Use AssetRipper headless script
-        ar_script = os.path.join(TOOLS_ROOT, "scripts", "assetripper-headless.ps1")
+        ar_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "assetripper-headless.ps1")
         if os.path.exists(ar_script):
             self.log("Launching AssetRipper in headless export mode...")
             cmd = [
@@ -266,7 +266,8 @@ class RecoveryPipeline:
                 "-File", ar_script,
                 "-InputPath", self.dir_01_extracted,
                 "-OutputPath", self.dir_02_assetripper,
-                "-ExportTimeoutMin", "30"
+                "-ExportTimeoutMin", "30",
+                "-AssetRipperExe", os.path.join(TOOLS_ROOT, "AssetRipper", "AssetRipper.GUI.Free.exe")
             ]
             self.log(f"Running AssetRipper on 01_extracted...")
             res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
@@ -274,7 +275,9 @@ class RecoveryPipeline:
                 if line.strip():
                     self.log(f"  [AssetRipper] {line.strip()}")
         else:
-            self.log("AssetRipper headless script not found; copying raw assets.")
+            self.log("AssetRipper headless script not found (scripts/assetripper-headless.ps1); "
+                     "the AssetRipper stage did NOT run.")
+            return False
 
         return True
 
