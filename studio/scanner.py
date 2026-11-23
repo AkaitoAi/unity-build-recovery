@@ -110,8 +110,11 @@ def inspect_archive_package(archive_path: str, ext: str, info: Dict[str, Any]):
                             analyze_file_list(sub_names, sub_z, info)
                     except Exception:
                         pass
+                # Files beside the APKs (a .pck, an OBB) can identify the engine too.
+                if info["engine"] == "Unknown":
+                    analyze_file_list(names, z, info)
             else:
-                info["format"] = "Android APK"
+                info["format"] = "ZIP archive" if ext == ".zip" else "Android APK"
                 analyze_file_list(names, z, info)
 
     except Exception as e:

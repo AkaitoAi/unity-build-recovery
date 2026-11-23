@@ -60,6 +60,9 @@ def studio_environment():
     env["ANDROID_HOME"] = android
     env["ANDROID_SDK_ROOT"] = android
     env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+    # Game and folder names may hold any language; the server's log must not choke on them.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
     if not os.path.isdir(env.get("JAVA_HOME", "")):
         jdks = sorted(glob.glob(r"C:\Program Files\Eclipse Adoptium\jdk-*"), reverse=True)

@@ -53,14 +53,14 @@ def install_snapshot():
         return dict(INSTALL_STATE)
 
 
-def run_install(name):
+def run_install(name, approved=None):
     """Installs one tool in the background so the request can return at once."""
     def progress(percent, message):
         install_set(percent=percent, message=message)
 
     install_set(running=True, tool=name, percent=0, message="Starting...", result=None, error="")
     try:
-        outcome = install(name, progress)
+        outcome = install(name, progress, approved)
         install_set(running=False, percent=100, message=outcome["tool"] + " " + outcome["version"] + " installed",
                     result=outcome)
     except Exception as exc:
@@ -87,6 +87,15 @@ def _inside(child: str, root: str) -> bool:
         return False
 
 
+def _protected_folders():
+    """Folders a workspace must not be, or sit inside: the studio, its tools, Windows and personal folders."""
+    home = os.path.expanduser("~")
+    names = [os.environ.get(k, "") for k in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData")]
+    exact = [home, os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""),
+             os.path.join(home, "Desktop"), os.path.join(home, "Documents"), os.path.join(home, "Downloads")]
+    return [p for p in names if p], [p for p in exact if p]
+
+
 def resolve_work(path, must_exist: bool = False) -> str:
     """Validates a work folder from the page. Raises ValueError with a message for the user."""
     if not isinstance(path, str) or not path.strip():
@@ -98,10 +107,19 @@ def resolve_work(path, must_exist: bool = False) -> str:
     if os.path.dirname(real) == real:
         raise ValueError("Do not use a drive root as the workspace.")
     for protected in (TOOLS_ROOT, APP_DIR):
-        if _inside(real, protected):
-            raise ValueError("The workspace cannot be inside the studio or tools folder.")
+        if _inside(real, protected) or _inside(protected, real):
+            raise ValueError("The workspace cannot be the studio or tools folder, or a folder that contains them.")
+    trees, exact = _protected_folders()
+    if any(_inside(real, p) for p in trees) or any(os.path.normcase(real) == os.path.normcase(os.path.realpath(p)) for p in exact):
+        raise ValueError("Choose a new subfolder, not a Windows, Program Files or personal folder itself.")
     if must_exist and not os.path.isdir(real):
         raise ValueError("That workspace folder does not exist yet. Run recovery first.")
+    if os.path.isdir(real):
+        entries = os.listdir(real)
+        studio_made = os.path.exists(os.path.join(real, ".run.json")) or os.path.isdir(os.path.join(real, "00_original"))
+        if entries and not studio_made:
+            raise ValueError("That folder already has other files in it. Choose an empty folder, "
+                             "or one this studio created.")
     return real
 
 
@@ -140,7 +158,10 @@ def pipeline_log(message: str) -> None:
             if name in text:
                 PIPELINE_STATE["tool"] = "7-Zip" if name == "7z" else ("JADX" if name == "jadx" else name)
                 break
-    print(text)
+    try:
+        print(text)
+    except UnicodeError:
+        print(text.encode("ascii", "replace").decode("ascii"))
 
 
 def pipeline_set(**fields) -> None:
@@ -316,7 +337,12 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             if busy:
                 self.send_json({"status": "busy", "message": "A recovery run or install is already running."}, status=409)
             else:
-                threading.Thread(target=run_install, args=(name,), daemon=True).start()
+                approved = {"version": str(body.get("version", "")), "sha256": str(body.get("sha256", "")).lower()}
+                try:
+                    threading.Thread(target=run_install, args=(name, approved), daemon=True).start()
+                except Exception:
+                    install_set(running=False)
+                    raise
                 self.send_json({"status": "started", "tool": name})
         elif path == "/api/agents/launch":
             self.handle_agent_launch(body)
@@ -379,6 +405,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         try:
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.claim_workspace(info)
+            if info.get("engine") not in ("Unity", "Godot"):
+                pipeline_log("WARNING: the engine was not recognised as Unity or Godot, so the Unity steps "
+                             "run on a best-effort basis and the result may be incomplete.")
 
             if info.get("engine") == "Godot":
                 stages = [
@@ -400,7 +429,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 before = pipeline.count_files(*folders)
                 started = time.time() - 1
                 try:
-                    run(info)
+                    outcome = run(info)
                 except Exception as exc:
                     pipeline.record(name, False, f"{type(exc).__name__}: {exc}")
                     pipeline_set(results=list(pipeline.results))
@@ -409,7 +438,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 produced = after - before
                 fresh = pipeline.newest_mtime(*folders) >= started
                 where = ", ".join(os.path.basename(f) for f in folders)
-                ok = after > 0 and (produced > 0 or fresh)
+                # A stage that says it failed (for example Godot recovery without project.godot)
+                # is a failure even when it wrote some files.
+                ok = after > 0 and (produced > 0 or fresh) and outcome is not False
                 pipeline.record(name, ok,
                                 (f"{produced} new file(s) in {where}" if produced > 0
                                  else f"{after} file(s) refreshed in {where}") if ok
@@ -455,6 +486,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"status": "busy", "message": "A recovery run or install is already in progress."}, status=409)
             return
         try:
+            pipeline_set(running=True, stage=f"Stage {stage}", tool="", status="running", message="", results=[], log=[])
             info = inspect_game(src)
             pipeline = RecoveryPipeline(src, dest, logger=pipeline_log)
             pipeline.create_directories()
@@ -523,6 +555,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
     def handle_auto_playable_preset(self, body):
         work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
         proj_dir = os.path.join(work_folder, "05_project")
+        if RecoveryPipeline.workspace_engine(work_folder) == "Godot" or os.path.exists(os.path.join(proj_dir, "project.godot")):
+            raise ValueError("This is a Godot workspace. The Unity scaffold does not apply to it.")
         scripts_dir = AR_SCRIPTS(work_folder)
         if not os.path.isdir(scripts_dir) or not any(files for _r, _d, files in os.walk(scripts_dir)):
             scripts_dir = os.path.join(work_folder, "03_scripts")
@@ -562,6 +596,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
                             "message": "Some tools this game needs are not installed."}, status=409)
             return
+        agents.check_agent(str(body.get("agent", "")))
+        RecoveryPipeline(src, work_folder).claim_workspace(info)
         result = agents.launch(str(body.get("agent", "")), src, work_folder, info)
         self.send_json({"status": "started", **result})
 
@@ -587,28 +623,27 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_json({"status": "started", "folder": folder})
 
     def handle_open_unity(self, body):
+        """Opens 05_project in the matching Unity editor. No batch file is ever run: a recovered
+        project can contain one, and this button should not execute anything it holds."""
+        import re as _re
         work_folder = resolve_work(body.get("work_folder", ""), must_exist=True)
         proj_dir = os.path.join(work_folder, "05_project")
-
-        open_bat = os.path.join(work_folder, "Open_In_Unity.bat")
-        if not os.path.exists(open_bat):
-            open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
-        if os.path.exists(open_bat):
-            os.startfile(open_bat)
-            self.send_json({"status": "launched", "method": "Open_In_Unity.bat"})
-            return
-
-        unity_exe = None
-        for ver, exe in INSTALLED_EDITORS:
-            if os.path.exists(exe):
-                unity_exe = exe
-                break
-
-        if unity_exe:
-            subprocess.Popen([unity_exe, "-projectPath", proj_dir])
-            self.send_json({"status": "launched", "exe": unity_exe})
-        else:
-            self.send_json({"status": "error", "message": "Unity editor not found on PATH"}, status=400)
+        if RecoveryPipeline.workspace_engine(work_folder) == "Godot":
+            raise ValueError("This is a Godot workspace; there is no Unity project to open. Open 05_project in the Godot editor.")
+        version_file = os.path.join(proj_dir, "ProjectSettings", "ProjectVersion.txt")
+        if not os.path.isfile(version_file):
+            raise ValueError("There is no Unity project in 05_project (a Godot workspace has none).")
+        with open(version_file, "r", encoding="utf-8", errors="ignore") as handle:
+            match = _re.search(r"m_EditorVersion:\s*(\S+)", handle.read())
+        version = match.group(1) if match else ""
+        line = ".".join(version.split(".")[:2])
+        exe = next((path for ver, path in INSTALLED_EDITORS if ver == version), None) \
+            or next((path for ver, path in INSTALLED_EDITORS if line and ver.startswith(line + ".")), None)
+        if not exe:
+            raise ValueError(f"Unity {version or '(unknown version)'} is not installed. Install it with Unity Hub, "
+                             "or open the folder yourself in another version (Unity will upgrade the project).")
+        subprocess.Popen([exe, "-projectPath", proj_dir])
+        self.send_json({"status": "launched", "exe": exe, "version": version})
 
     def handle_browse(self, query):
         """Browse File / Browse Folder.
@@ -649,7 +684,10 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         f_path = qs.get("path", [""])[0]
         work = qs.get("work_folder", [""])[0]
         real = os.path.realpath(f_path) if f_path else ""
-        root = os.path.realpath(work) if work else ""
+        try:
+            root = resolve_work(work, must_exist=True)
+        except ValueError:
+            root = ""
         if not root or not real or not _inside(real, root) \
                 or os.path.splitext(real)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md", ".js", ".ts", ".java", ".html"):
             f_path = ""

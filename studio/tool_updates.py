@@ -253,6 +253,7 @@ def check_updates(force=False):
             "repo": tool["repo"], "latest": "", "published": "", "prerelease": False,
             "url": f"https://github.com/{tool['repo']}/releases", "download": "",
             "state": "unknown", "note": "", "can_install": False,
+            "sha256": "", "size_mb": 0,
         }
         if installed_date is None:
             entry["state"] = "missing"
@@ -289,7 +290,8 @@ def check_updates(force=False):
         if latest:
             entry.update({"latest": latest["tag"], "published": latest["published"],
                           "url": latest["url"], "prerelease": latest.get("prerelease", False),
-                          "download": latest.get("download", "")})
+                          "download": latest.get("download", ""),
+                          "sha256": latest.get("sha256", ""), "size_mb": latest.get("size_mb", 0)})
             try:
                 published = datetime.date.fromisoformat(latest["published"])
             except Exception:
@@ -299,7 +301,7 @@ def check_updates(force=False):
             elif tool.get("npm"):
                 def parts(text):
                     return [int(n) for n in re.findall(r"\d+", text or "")][:3]
-                if parts(latest.get("npm_version")) > parts(installed_text):
+                if not (installed_text or "").startswith("v") or parts(latest.get("npm_version")) > parts(installed_text):
                     entry["state"] = "update"
                     entry["note"] += f"npm has {latest['tag']}, newer than what is installed."
                 else:
@@ -312,7 +314,10 @@ def check_updates(force=False):
             else:
                 entry["state"] = "current"
                 entry["note"] += f"Installed build matches the newest release ({latest['tag']})."
-            entry["can_install"] = (bool(latest.get("download")) or bool(tool.get("npm")))  and entry["state"] in ("update", "missing")
+            downloadable = bool(tool.get("npm")) or (bool(latest.get("download")) and bool(latest.get("sha256")))
+            entry["can_install"] = downloadable and entry["state"] in ("update", "missing")
+            if not downloadable and entry["state"] in ("update", "missing") and latest.get("download"):
+                entry["note"] += " The release publishes no SHA-256, so the studio will not download it; install it by hand."
             if tool.get("no_install"):
                 entry["can_install"] = False
                 entry["note"] += " Update this tool by hand; the studio reads it from a fixed folder."
@@ -330,7 +335,7 @@ def check_updates(force=False):
 
 # ----------------------------------------------------------------------------- installing
 
-def _install_npm(tool, report):
+def _install_npm(tool, report, approved=None):
     """Updates a tool that ships as an npm package, in its own folder."""
     import subprocess
     import shutil
@@ -354,9 +359,12 @@ def _install_npm(tool, report):
         if os.path.exists(path):
             backup[name] = open(path, "rb").read()
 
-    report(10, f"Installing {tool['npm']} with npm (this can take a few minutes)...")
+    pinned = (approved or {}).get("version", "").lstrip("v")
+    if not re.match(r"^\d+\.\d+\.\d+([-+.][0-9A-Za-z.]+)?$", pinned):
+        raise RuntimeError("Nothing was installed: the npm version to install was not approved.")
+    report(10, f"Installing {tool['npm']}@{pinned} with npm (this can take a few minutes)...")
     result = subprocess.run(
-        [npm, "install", f"{tool['npm']}@latest", "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
+        [npm, "install", f"{tool['npm']}@{pinned}", "--engine-strict=false", "--ignore-scripts", "--no-audit", "--no-fund"],
         cwd=folder, capture_output=True, text=True, errors="replace", timeout=2700)
     if result.returncode != 0:
         for name, data in backup.items():  # keep the manifest of the working install
@@ -372,7 +380,7 @@ def _install_npm(tool, report):
     return {"tool": tool["name"], "version": version, "path": folder, "size_mb": 0}
 
 
-def install(name, progress=None):
+def install(name, progress=None, approved=None):
     """Downloads and installs the newest build of one tool.
 
     `progress` is called with (percent, message) so the interface can follow along. Archives
@@ -388,13 +396,25 @@ def install(name, progress=None):
     if not tool:
         raise ValueError(f"unknown tool: {name}")
 
+    approved = approved or {}
+    if not approved.get("version"):
+        raise RuntimeError("Nothing was installed: the download has to be approved first.")
+
     # Some tools are published to npm rather than as a release asset.
     if tool.get("npm"):
-        return _install_npm(tool, report)
+        return _install_npm(tool, report, approved)
 
     report(2, f"Looking up the newest {tool['name']}...")
     latest = _newest_release(tool["repo"], tool.get("asset_pattern"), tool.get("stable_only", False))
+    if latest["tag"] == approved.get("version") and latest.get("sha256", "") != str(approved.get("sha256", "")).lower():
+        raise RuntimeError(f"The checksum of {latest['tag']} no longer matches the one you approved. "
+                           "Nothing was installed; check again and approve it again.")
+    if latest["tag"] != approved.get("version"):
+        raise RuntimeError(f"The newest release is now {latest['tag']}, not the {approved.get('version')} you approved. "
+                           "Nothing was installed; check again and approve the new one.")
     url = latest.get("download")
+    if url and not re.match(r"^https://(github\.com|objects\.githubusercontent\.com)/", url):
+        raise RuntimeError("The download address is not an https GitHub address; nothing was installed.")
     if not url:
         raise RuntimeError(f"{tool['name']} {latest['tag']} publishes no Windows download; "
                            f"install it by hand from {latest['url']}")

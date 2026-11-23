@@ -24,10 +24,18 @@ def required_tools(info: dict) -> list:
         return [{"tool": "GDRE Tools"}]
     if engine == "Unity":
         needed = [{"tool": "7-Zip", "manual": True}, {"tool": "AssetRipper"}]
-        if info.get("has_il2cpp"):
-            needed.append({"tool": "Il2CppDumper"})
+        if info.get("has_il2cpp") and not _il2cpp_tool_present():
+            # Either one is enough: Il2CppDumper, or Cpp2IL (which handles newer metadata).
+            needed.append({"tool": "Cpp2IL"})
         return needed
     return []
+
+
+def _il2cpp_tool_present() -> bool:
+    if os.path.exists(os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")):
+        return True
+    folder = os.path.join(TOOLS_ROOT, "Cpp2IL")
+    return os.path.isdir(folder) and any(f.lower().endswith(".exe") for f in os.listdir(folder))
 
 
 def _present(name: str) -> bool:

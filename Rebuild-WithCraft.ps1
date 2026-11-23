@@ -49,8 +49,12 @@ Implement this missing gameplay system in the existing Unity project. Keep the p
 
 $Task
 "@
-if ($cli.Source -match '\.(cmd|bat)$' -and $prompt -match '[&|^%<>]') {
-    throw 'This CLI is a .cmd or .bat shim, which cannot pass & | ^ % < > safely. Remove those characters from -Task.'
+if ($cli.Source -match '\.(cmd|bat)$') {
+    # A batch shim cuts the command line at the first newline, so send one line, and it cannot pass these characters.
+    $prompt = ($prompt -split '\s+') -join ' '
+    if ($prompt -match '[&|^%<>"]') {
+        throw 'This CLI is a .cmd or .bat shim, which cannot pass & | ^ % < > " safely. Remove those characters from -Task.'
+    }
 }
 if ($PSVersionTable.PSVersion.Major -lt 7) { $prompt = $prompt.Replace('"', '\"') }
 $backendArgs = if ($Backend) { @('--backend', $Backend) } else { @() }
