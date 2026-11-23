@@ -829,11 +829,12 @@ All 16 local recovery engines loaded and ready.
       const status = document.getElementById('agent-status');
       if (!res.ok) { status.innerText = ''; return alert(data.message || 'Could not start.'); }
       status.innerText = data.agent + ' opened. Task file: ' + data.task_file +
-        (data.paste_this ? '  Paste into the agent: ' + data.paste_this : '');
+        (data.copied ? '  The path to the task file was copied to your clipboard: ' + data.copy_text
+                     : '  Could not copy to the clipboard. Use: ' + data.copy_text);
       if (data.paste_this) {
         const how = data.copied
-          ? 'press Ctrl+V to paste the line that was copied for you, and send it.'
-          : 'then type and send this line:\n\n' + data.paste_this;
+          ? 'press Ctrl+V to paste the message that was copied for you (it holds the full path of the task file), and send it.'
+          : 'then type and send this message:\n\n' + data.paste_this;
         alert(data.agent + ' is open, but it has not started yet.\n\nOpen its agent or chat panel, ' + how +
           '\n\nThe agent then reads AGENT_TASK.md in your workspace and starts the recovery.');
       }
