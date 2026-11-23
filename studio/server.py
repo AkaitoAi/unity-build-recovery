@@ -1,6 +1,6 @@
 """
 AETHER RECON STUDIO - High Performance Local Backend Server
-Runs 100% offline on loopback port 5899.
+Runs locally on loopback port 5899 (only the tool-update checker contacts GitHub and npm).
 Provides REST endpoints for scanning, recovery pipeline execution, AI script classification, and Unity Editor launching.
 """
 
@@ -11,9 +11,8 @@ import time
 import urllib.parse
 import threading
 import subprocess
+import secrets
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import tkinter as tk
-from tkinter import filedialog
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(APP_DIR, "web")
@@ -29,6 +28,8 @@ from unity_playable_scaffolder import scaffold_unity_project, INSTALLED_EDITORS
 from tool_updates import check_updates, install
 
 PORT = 5899
+SESSION_TOKEN = secrets.token_urlsafe(24)
+MAX_BODY_BYTES = 1_000_000
 
 # Live view of a pipeline run, so the page can show which tool is working right now.
 # The run happens inside one long request, so without this the console stayed silent
@@ -137,7 +138,26 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
             return False
+        if urllib.parse.urlparse(self.path).path.startswith("/api/"):
+            supplied = self.headers.get("X-Studio-Token", "")
+            if not secrets.compare_digest(supplied, SESSION_TOKEN):
+                return False
         return True
+
+    def _serve_index(self):
+        """Serves the page with this launch's token so only the page can call the API."""
+        with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as handle:
+            page = handle.read()
+        snippet = ("<script>(function(){var t=" + json.dumps(SESSION_TOKEN) + ";var f=window.fetch;"
+                   "window.fetch=function(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},"
+                   "{'X-Studio-Token':t});return f(u,o);};})();</script>")
+        page = page.replace("<head>", "<head>" + snippet, 1)
+        data = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _deny(self):
         self.send_response(403)
@@ -149,7 +169,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/tools/status":
+        if path in ("/", "/index.html"):
+            self._serve_index()
+        elif path == "/api/tools/status":
             self.handle_tools_status()
         elif path == "/api/scripts/read":
             self.handle_script_read(parsed.query)
@@ -180,7 +202,14 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            content_length = -1
+        if content_length < 0 or content_length > MAX_BODY_BYTES:
+            self.send_response(413)
+            self.end_headers()
+            return
         post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
             body = json.loads(post_data.decode("utf-8"))
@@ -235,7 +264,18 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         """
         src = body.get("source", "")
         dest = body.get("destination", "")
+        if os.path.isdir(src):
+            self.send_json({"status": "error", "stages": [], "failed": [],
+                            "message": "Folders are not supported. Choose an APK, XAPK or ZIP, "
+                                       "or run Recover.ps1 on a Windows build folder."}, status=400)
+            return
 
+        with PIPELINE_LOCK:
+            if PIPELINE_STATE["running"]:
+                self.send_json({"status": "busy", "message": "A recovery run is already in progress.",
+                                "stages": [], "failed": []}, status=409)
+                return
+            PIPELINE_STATE["running"] = True
         pipeline_set(running=True, stage="Inspecting package", tool="", status="running",
                      message="", results=[], log=[])
         try:
@@ -289,10 +329,18 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             message = f"{type(exc).__name__}: {exc}"
             pipeline_set(running=False, stage="Failed", tool="", status="error", message=message)
             self.send_json({"status": "error", "message": message, "stages": [], "failed": []})
+
     def handle_pipeline_stage(self, body):
         src = body.get("source", "")
         dest = body.get("destination", "")
         stage = body.get("stage", 1)
+        if stage not in (1, 2, 3, 4):
+            self.send_json({"status": "error", "message": "stage must be 1-4"}, status=400)
+            return
+        with PIPELINE_LOCK:
+            if PIPELINE_STATE["running"]:
+                self.send_json({"status": "busy", "message": "A recovery run is already in progress."}, status=409)
+                return
 
         info = inspect_game(src)
         pipeline = RecoveryPipeline(src, dest)
@@ -326,11 +374,15 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         scripts = body.get("scripts", [])
         target_dir = os.path.join(work_folder, "05_project", "Assets", "_Project", "Scripts")
 
+        root = os.path.realpath(work_folder)
         items = []
         for s in scripts:
-            item = ScriptItem(s["path"], work_folder)
-            item.category = s.get("category", "Core Gameplay")
-            item.filename = s.get("filename", os.path.basename(s["path"]))
+            source = os.path.realpath(str(s.get("path", "")))
+            if not source.startswith(root + os.sep) or not os.path.isfile(source):
+                continue  # only files inside the work folder can be copied
+            item = ScriptItem(source, work_folder)
+            item.category = str(s.get("category", "Core Gameplay"))
+            item.filename = os.path.basename(str(s.get("filename") or source))
             item.is_selected = True
             items.append(item)
 
@@ -357,14 +409,16 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         export_selected_scripts(gameplay_items, target_scripts_dir)
 
         # 2. Scaffold Unity project and generate missing SDK stubs
-        res = scaffold_unity_project(proj_dir, "2022.3.62f3", "RecoveredGame")
+        res = scaffold_unity_project(proj_dir, body.get("unity_version", ""), "RecoveredGame")
         self.send_json({"status": "playable_ready", "results": res, "gameplay_scripts_exported": len(gameplay_items)})
 
     def handle_open_unity(self, body):
         work_folder = body.get("work_folder", "")
         proj_dir = os.path.join(work_folder, "05_project")
 
-        open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
+        open_bat = os.path.join(work_folder, "Open_In_Unity.bat")
+        if not os.path.exists(open_bat):
+            open_bat = os.path.join(proj_dir, "Open_In_Unity.bat")
         if os.path.exists(open_bat):
             os.startfile(open_bat)
             self.send_json({"status": "launched", "method": "Open_In_Unity.bat"})
@@ -419,7 +473,11 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
     def handle_script_read(self, query):
         qs = urllib.parse.parse_qs(query)
         f_path = qs.get("path", [""])[0]
-        if os.path.splitext(f_path)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md"):
+        work = qs.get("work_folder", [""])[0]
+        real = os.path.realpath(f_path) if f_path else ""
+        root = os.path.realpath(work) if work else ""
+        if not root or not real.startswith(root + os.sep) \
+                or os.path.splitext(real)[1].lower() not in (".cs", ".txt", ".json", ".shader", ".md"):
             f_path = ""
         if f_path and os.path.isfile(f_path):
             try:
@@ -452,7 +510,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             {"name": ".NET 8 SDK", "role": "C# Execution & Tooling Runtime", "path": os.path.join(TOOLS_ROOT, "dotnet8", "dotnet.exe")},
             {"name": "Android NDK & Clang", "role": "Native C/C++ Build Toolchain", "path": os.path.join(TOOLS_ROOT, "android-sdk", "ndk")},
             {"name": "Android SDK (aapt2/adb)", "role": "Android Manifest & APK Parsing", "path": os.path.join(TOOLS_ROOT, "android-sdk", "platform-tools", "adb.exe")},
-            {"name": "Unity Editor (Host)", "role": "Active Matching Editor Target", "path": r"C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Unity.exe"}
+            {"name": "Unity Editor (Host)", "role": "Active Matching Editor Target", "path": INSTALLED_EDITORS[0][1] if INSTALLED_EDITORS else r"C:\Program Files\Unity\Hub\Editor"}
         ]
         out = []
         for t in tools:

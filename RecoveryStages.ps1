@@ -14,6 +14,25 @@ function Invoke-RecoveryTool($Executable, [string[]]$Arguments, $Directory, $Log
     }
 }
 
+function Assert-SafeArchive([string]$Path, [long]$MaxBytes = 40GB, [int]$MaxEntries = 500000) {
+    # Rejects zip-slip paths and archives that expand beyond what a build could plausibly need.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        if ($archive.Entries.Count -gt $MaxEntries) { throw "unsafe archive: $($archive.Entries.Count) entries." }
+        $total = 0L
+        foreach ($entry in $archive.Entries) {
+            $name = $entry.FullName
+            if ($name -match '(^|[\/])\.\.([\/]|$)' -or [IO.Path]::IsPathRooted($name) -or $name -match '^[A-Za-z]:') {
+                throw "unsafe archive: entry path '$name' leaves the extraction folder."
+            }
+            $total += $entry.Length
+            if ($total -gt $MaxBytes) { throw 'unsafe archive: it expands past the size limit.' }
+        }
+    }
+    finally { $archive.Dispose() }
+}
+
 function Invoke-RecoveryStage($Name, $Action) {
     Write-Host "Running $Name"
     try {
@@ -37,7 +56,9 @@ function Get-BuildInfo($Source, $Extension) {
     $native = @($files | Where-Object Name -In 'GameAssembly.dll','libil2cpp.so')
     $metadata = @($files | Where-Object Name -EQ 'global-metadata.dat')
     $managed = @($files | Where-Object {
-        $_.Extension -eq '.dll' -and $_.Directory.Name -eq 'Managed'
+        $_.Extension -eq '.dll' -and $_.Directory.Name -eq 'Managed' -and
+        # Engine and framework assemblies are not game code; decompiling them wastes time.
+        $_.BaseName -notmatch '^(mscorlib|netstandard|System(\..+)?|Mono\..+|Microsoft\..+|UnityEngine(\..+)?|Unity\..+)$'
     })
     $platform = 'Asset'
     if ($dex.Count -or $Extension -in '.apk','.xapk','.obb' -or ($native | Where-Object Name -EQ 'libil2cpp.so')) {
@@ -69,7 +90,9 @@ function Invoke-MonoRecovery($Assemblies, $Directory) {
     # The SDK is in the cache after setup. Use that host for the tool shim on later runs.
     $sdk = Get-ChildItem -LiteralPath $toolRoot -Directory -Filter 'dotnet-*' |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'dotnet.exe') -PathType Leaf } |
-        Sort-Object Name -Descending | Select-Object -First 1
+        Sort-Object { try { [version]($_.Name -replace '^dotnet-', '') } catch { [version]'0.0' } } -Descending |
+        Select-Object -First 1
+    if (!$sdk) { throw 'The .NET SDK is missing from the tool cache.' }
     $env:DOTNET_ROOT = $sdk.FullName
     $env:DOTNET_ROOT_X64 = $sdk.FullName
     $index = 0

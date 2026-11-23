@@ -218,15 +218,15 @@ def export_selected_scripts(items: List[ScriptItem], target_scripts_dir: str) ->
     skipped = 0
 
     for item in items:
-        if not item.is_selected:
-            skipped += 1
+        if not item.is_selected or item.filename.lower() == "dump.cs":
+            skipped += 1  # dump.cs is a pseudo-C# listing and does not compile
             continue
 
         cat_folder = re.sub(r"[^\w\s-]", "", item.category).strip().replace(" ", "_")
         dest_folder = os.path.join(target_scripts_dir, cat_folder)
         os.makedirs(dest_folder, exist_ok=True)
 
-        dest_file = os.path.join(dest_folder, item.filename)
+        dest_file = os.path.join(dest_folder, os.path.basename(item.filename))
         shutil.copy2(item.filepath, dest_file)
         exported += 1
 

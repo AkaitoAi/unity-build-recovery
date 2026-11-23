@@ -1,7 +1,8 @@
 """
-Unity Playable Scaffolder & AutoSDKStubber.
-Ensures that any recovered game project (Unity IL2CPP/Mono or Web/Capacitor) opens in Unity Editor
-with ZERO compilation errors and enters Playable condition.
+Unity project scaffolder and SDK stubber.
+Wraps recovered assets in a Unity project folder (ProjectVersion, Packages/manifest.json, an
+assembly definition) and adds placeholder types for common ad and analytics SDKs. It does not
+compile the project, so errors can remain after it runs.
 """
 
 import os
@@ -10,15 +11,20 @@ import json
 import shutil
 from typing import List, Dict, Any
 
-INSTALLED_EDITORS = [
-    ("6000.3.21f1", r"C:\Program Files\Unity\Hub\Editor\6000.3.21f1\Editor\Unity.exe"),
-    ("2022.3.62f3", r"C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Unity.exe"),
-    ("6000.0.60f1", r"C:\Program Files\Unity\Hub\Editor\6000.0.60f1\Editor\Unity.exe"),
-    ("6000.3.0f1", r"C:\Program Files\Unity\Hub\Editor\6000.3.0f1\Editor\Unity.exe")
-]
+def _discover_editors():
+    """Editors installed through Unity Hub, newest version string first."""
+    import glob
+    found = []
+    for exe in glob.glob(r"C:\Program Files\Unity\Hub\Editor\*\Editor\Unity.exe"):
+        version = os.path.basename(os.path.dirname(os.path.dirname(exe)))
+        found.append((version, exe))
+    return sorted(found, reverse=True)
+
+
+INSTALLED_EDITORS = _discover_editors()
 
 SDK_STUBS_CODE = {
-    "GoogleMobileAds": """// Auto-generated SDK Stub for Unity Zero-Error Compilation
+    "GoogleMobileAds": """// Auto-generated SDK Stub for Unity Placeholder
 namespace GoogleMobileAds.Api
 {
     public class MobileAds
@@ -35,7 +41,7 @@ namespace GoogleMobileAds.Api
     public class AdSize { public static AdSize Banner = new AdSize(); public static AdSize MediumRectangle = new AdSize(); }
 }
 """,
-    "AppLovinMax": """// Auto-generated AppLovin Max Stub for Unity Zero-Error Compilation
+    "AppLovinMax": """// Auto-generated AppLovin Max Stub for Unity Placeholder
 public class MaxSdk
 {
     public static void InitializeSdk(string key = "") {}
@@ -51,7 +57,7 @@ public class MaxSdk
     public class BannerPosition { public const string BottomCenter = "BottomCenter"; public const string TopCenter = "TopCenter"; }
 }
 """,
-    "Firebase": """// Auto-generated Firebase Stub for Unity Zero-Error Compilation
+    "Firebase": """// Auto-generated Firebase Stub for Unity Placeholder
 namespace Firebase
 {
     public class FirebaseApp
@@ -71,7 +77,7 @@ namespace Firebase.Analytics
     }
 }
 """,
-    "Facebook": """// Auto-generated Facebook SDK Stub for Unity Zero-Error Compilation
+    "Facebook": """// Auto-generated Facebook SDK Stub for Unity Placeholder
 namespace Facebook.Unity
 {
     public class FB
@@ -84,7 +90,7 @@ namespace Facebook.Unity
     }
 }
 """,
-    "GameAnalytics": """// Auto-generated GameAnalytics Stub for Unity Zero-Error Compilation
+    "GameAnalytics": """// Auto-generated GameAnalytics Stub for Unity Placeholder
 namespace GameAnalyticsSDK
 {
     public class GameAnalytics
@@ -98,21 +104,29 @@ namespace GameAnalyticsSDK
 """
 }
 
-def detect_matching_installed_unity(target_ver: str) -> str:
-    """Finds the best matching installed Unity editor version."""
-    for ver, path in INSTALLED_EDITORS:
-        if os.path.exists(path):
-            if target_ver and target_ver in ver:
-                return ver
-    # Default to 2022.3.62f3 or first existing
-    for ver, path in INSTALLED_EDITORS:
-        if os.path.exists(path):
-            return ver
-    return "2022.3.62f3"
+def detect_matching_installed_unity(target_ver: str):
+    """Returns (version, exact). Prefers the exact editor, then the same major.minor line.
+
+    When neither is installed the newest installed editor is returned with exact=False so the
+    caller can warn that Unity will upgrade the project on open. Returns ("", False) when no
+    editor is installed.
+    """
+    target = (target_ver or "").strip()
+    for ver, _path in INSTALLED_EDITORS:
+        if target and ver == target:
+            return ver, True
+    line = ".".join(target.split(".")[:2]) if re.match(r"^\d+\.\d+", target) else ""
+    if line:
+        for ver, _path in INSTALLED_EDITORS:
+            if ver.startswith(line + "."):
+                return ver, False
+    if INSTALLED_EDITORS:
+        return INSTALLED_EDITORS[0][0], False
+    return "", False
 
 def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title: str) -> Dict[str, Any]:
-    """Scaffolds a clean, compile-ready Unity project structure."""
-    results = {"editor_version": "", "packages_added": [], "stubs_created": []}
+    """Scaffolds a Unity project folder around recovered assets. Does not verify compilation."""
+    results = {"editor_version": "", "version_exact": False, "packages_added": [], "stubs_created": []}
 
     assets_dir = os.path.join(project_dir, "Assets")
     project_settings = os.path.join(project_dir, "ProjectSettings")
@@ -127,14 +141,18 @@ def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title
     os.makedirs(stubs_dir, exist_ok=True)
 
     # 1. ProjectVersion.txt
-    matched_ver = detect_matching_installed_unity(detected_unity_ver)
+    matched_ver, exact = detect_matching_installed_unity(detected_unity_ver)
     results["editor_version"] = matched_ver
+    results["version_exact"] = exact
     pv_path = os.path.join(project_settings, "ProjectVersion.txt")
-    with open(pv_path, "w", encoding="utf-8") as f:
-        f.write(f"m_EditorVersion: {matched_ver}\nm_EditorVersionWithRevision: {matched_ver}\n")
+    if not os.path.exists(pv_path) and matched_ver:  # a version recovered with the assets wins
+        with open(pv_path, "w", encoding="utf-8") as f:
+            f.write(f"m_EditorVersion: {matched_ver}\nm_EditorVersionWithRevision: {matched_ver}\n")
 
     # 2. Packages/manifest.json
     manifest_path = os.path.join(packages_dir, "manifest.json")
+    editor_major = int(matched_ver.split(".")[0]) if matched_ver[:1].isdigit() else 2022
+    UGUI_VERSION = "2.0.0" if editor_major >= 6000 else "1.0.0"
     manifest_data = {
         "dependencies": {
             "com.unity.collab-proxy": "2.4.4",
@@ -144,7 +162,7 @@ def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title
             "com.unity.inputsystem": "1.7.0",
             "com.unity.textmeshpro": "3.0.9",
             "com.unity.timeline": "1.7.6",
-            "com.unity.ugui": "2.0.0",
+            "com.unity.ugui": UGUI_VERSION,
             "com.unity.modules.ai": "1.0.0",
             "com.unity.modules.animation": "1.0.0",
             "com.unity.modules.audio": "1.0.0",
@@ -180,7 +198,15 @@ def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title
         json.dump(asmdef_data, f, indent=2)
 
     # 4. Generate all SDK stubs so missing namespaces never break Play mode
+    existing = set()
+    for walk_root, walk_dirs, walk_files in os.walk(assets_dir):
+        if os.path.relpath(walk_root, assets_dir).startswith("_Project"):
+            continue
+        for entry in walk_dirs + walk_files:
+            existing.add(entry.lower())
     for stub_name, stub_code in SDK_STUBS_CODE.items():
+        if any(stub_name.lower() in name for name in existing):
+            continue  # the game already ships this SDK; a stub would duplicate its types
         stub_file = os.path.join(stubs_dir, f"{stub_name}Stub.cs")
         with open(stub_file, "w", encoding="utf-8") as f:
             f.write(stub_code)
@@ -188,22 +214,24 @@ def scaffold_unity_project(project_dir: str, detected_unity_ver: str, game_title
 
     return results
 
-def setup_playable_web_runner(project_dir: str, web_assets_dir: str, game_title: str) -> str:
-    """Sets up an instant 1-click local web runner so HTML5/Capacitor games are instantly playable."""
-    runner_bat = os.path.join(project_dir, "Play_Game_Offline.bat")
-    py_server_code = f"""@echo off
-title 🎮 Playing: {game_title} (Offline Web Server)
-color 0A
-cd /d "%~dp0"
-echo ===============================================================================
-echo        🎮 LAUNCHING {game_title.upper()} (100%% OFFLINE RUNNER)
-echo ===============================================================================
-echo.
-echo Starting local offline game server on http://localhost:8088...
-start "" "http://localhost:8088"
-python -m http.server 8088 --bind 127.0.0.1
-pause
-"""
-    with open(runner_bat, "w", encoding="utf-8") as f:
-        f.write(py_server_code)
+def setup_playable_web_runner(output_dir: str, web_dir: str, game_title: str) -> str:
+    """Writes a batch file that serves web_dir on 127.0.0.1:8088. Needs Python on PATH.
+
+    The batch file goes in output_dir (beside the Unity project, not inside it) and serves
+    the folder named web_dir.
+    """
+    safe_title = re.sub(r"[^A-Za-z0-9 ._-]", "", game_title or "game")[:60] or "game"
+    folder = os.path.basename(os.path.normpath(web_dir))
+    runner_bat = os.path.join(output_dir, "Play_Game_Offline.bat")
+    code = (
+        "@echo off\r\n"
+        f"title Playing {safe_title}\r\n"
+        f'cd /d "%~dp0{folder}"\r\n'
+        "echo Serving on http://127.0.0.1:8088 (close this window to stop)\r\n"
+        'start "" "http://127.0.0.1:8088"\r\n'
+        "python -m http.server 8088 --bind 127.0.0.1\r\n"
+        "pause\r\n"
+    )
+    with open(runner_bat, "w", encoding="ascii", newline="") as f:
+        f.write(code)
     return runner_bat

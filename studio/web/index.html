@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AETHER RECON — AAA Game Decompiler & Unity Playable Studio</title>
+  <title>Aether Recon Studio</title>
   <link rel="icon" type="image/png" href="studio_icon.png">
   <style>
     :root {
@@ -505,7 +505,7 @@
       <div class="brand-icon">♾️</div>
       <div class="brand-text">
         <h1>AETHER RECON STUDIO</h1>
-        <p>AAA Universal Game & Unity Playable Reconstruction</p>
+        <p>Unity build recovery for APK, XAPK and ZIP</p>
       </div>
     </div>
     <div class="header-status">
@@ -533,7 +533,7 @@
       <div class="card">
         <div class="card-title">
           <span>📁 Game Intake & Work Workspace</span>
-          <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Supports APK, XAPK, ZIP & Windows Builds</span>
+          <span style="color:var(--text-muted);font-weight:400;font-size:11px;">Supports APK, XAPK and ZIP (use Recover.ps1 for Windows build folders)</span>
         </div>
         <div class="input-row">
           <div class="input-label">Game Package:</div>
@@ -596,7 +596,7 @@
             ⚡ RUN FULL RECOVERY PIPELINE (START TO END)
           </button>
           <button class="btn btn-purple" style="font-size:13px;padding:12px 20px;" onclick="autoPlayableBuildPreset()">
-            🎯 AUTO-SELECT & FIX FOR 100% PLAYABLE UNITY BUILD
+            Auto-select gameplay scripts and scaffold project
           </button>
         </div>
 
@@ -604,7 +604,7 @@
           <div class="step-pill" onclick="runSingleStage(1)">1. Unpack 7-Zip Container</div>
           <div class="step-pill" onclick="runSingleStage(2)">2. AssetRipper 2.x Rip</div>
           <div class="step-pill" onclick="runSingleStage(3)">3. Il2CppDumper / C# Dump</div>
-          <div class="step-pill" onclick="runSingleStage(4)">4. Rebuild Playable Unity Project</div>
+          <div class="step-pill" onclick="runSingleStage(4)">4. Build Unity Project Folder</div>
         </div>
 
         <div class="progress-track">
@@ -617,7 +617,7 @@
     <div id="pane-scripts" class="tab-pane">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div style="display:flex;gap:8px;align-items:center;">
-          <button class="btn btn-purple" onclick="autoPlayableBuildPreset()">🎯 100% Playable Preset</button>
+          <button class="btn btn-purple" onclick="autoPlayableBuildPreset()">Auto-select &amp; scaffold</button>
           <button class="btn" onclick="selectRecommendedGameplay()">✨ Select Gameplay Only</button>
           <button class="btn" onclick="deselectAds()">❌ Filter Out Ads</button>
           <button class="btn" onclick="checkAllScripts(true)">☑️ Select All</button>
@@ -676,7 +676,7 @@
     <div id="pane-tools" class="tab-pane">
       <div class="card" style="flex:1;">
         <div class="card-title">
-          <span>🛠️ Installed Reverse Engineering & Recovery Tools (100% Offline)</span>
+          <span>🛠️ Installed Reverse Engineering & Recovery Tools (runs locally)</span>
           <button class="btn btn-primary" onclick="loadToolsHealth()">🔄 Re-run Diagnostic Verification</button>
         </div>
         <div class="tools-grid" id="tools-grid-container">
@@ -714,6 +714,7 @@ All 16 local recovery engines loaded and ready.
   </main>
 
   <script>
+    function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
     let scriptsData = [];
     let currentCategoryFilter = 'All';
     let isPipelineRunning = false;
@@ -869,11 +870,11 @@ All 16 local recovery engines loaded and ready.
 
         tr.innerHTML = `
           <td style="text-align:center;"><input type="checkbox" ${s.is_selected ? 'checked' : ''} onclick="event.stopPropagation(); toggleSelect(${idx})"></td>
-          <td style="font-weight:700;">${s.name}</td>
-          <td><span class="badge-cat ${badgeClass}">${s.badge} ${s.category}</span></td>
-          <td style="text-align:center;font-weight:700;color:var(--accent-cyan);">${s.confidence}</td>
-          <td style="text-align:right;color:var(--text-muted);">${s.lines}</td>
-          <td style="text-align:right;color:var(--text-muted);">${s.methods}</td>
+          <td style="font-weight:700;">${esc(s.name)}</td>
+          <td><span class="badge-cat ${badgeClass}">${esc(s.badge)} ${esc(s.category)}</span></td>
+          <td style="text-align:center;font-weight:700;color:var(--accent-cyan);">${esc(s.confidence)}</td>
+          <td style="text-align:right;color:var(--text-muted);">${esc(s.lines)}</td>
+          <td style="text-align:right;color:var(--text-muted);">${esc(s.methods)}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -890,7 +891,7 @@ All 16 local recovery engines loaded and ready.
       document.getElementById('preview-filename').innerText = s.filename;
       document.getElementById('preview-meta').innerText = `${s.category} • ${s.lines} Lines • ${s.confidence} Confidence`;
       try {
-        const res = await fetch('/api/scripts/read?path=' + encodeURIComponent(s.path));
+        const res = await fetch('/api/scripts/read?path=' + encodeURIComponent(s.path) + '&work_folder=' + encodeURIComponent(document.getElementById('input-work').value.trim()));
         const code = await res.text();
         document.getElementById('preview-code').innerText = code;
       } catch (e) {
@@ -932,14 +933,14 @@ All 16 local recovery engines loaded and ready.
 
     async function autoPlayableBuildPreset() {
       selectRecommendedGameplay();
-      logMessage('🎯 Applying 100% Playable Build Preset (Auto SDK Stubbing)...');
+      logMessage('🎯 Selecting gameplay scripts and scaffolding the project...');
       const dest = document.getElementById('input-work').value.trim();
       await fetch('/api/scripts/auto-playable-preset', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ work_folder: dest })
       });
-      alert('🎯 100% Playable Preset Ready!\n\n✓ Core Gameplay & UI Selected.\n✓ Ad & Analytics SDKs Filtered.\n✓ Missing SDK Stubs Generated (AdMob, AppLovin, Firebase).\n✓ Clean GameCore.asmdef created for zero-error compilation.');
+      alert('Scaffold written. Gameplay scripts were selected and placeholder SDK stubs added where the game does not ship the SDK. Open the project in Unity and check the console: compilation is not verified.');
     }
 
     async function exportSelectedScripts() {
@@ -975,8 +976,8 @@ All 16 local recovery engines loaded and ready.
       if (!el) return;
       if (!stage && !tool) { el.innerHTML = ''; return; }
       el.innerHTML = tool
-        ? 'Stage: <b>' + stage + '</b> &nbsp;|&nbsp; Tool running: <b style="color:var(--accent-cyan)">' + tool + '</b>'
-        : 'Stage: <b>' + stage + '</b>';
+        ? 'Stage: <b>' + esc(stage) + '</b> &nbsp;|&nbsp; Tool running: <b style="color:var(--accent-cyan)">' + esc(tool) + '</b>'
+        : 'Stage: <b>' + esc(stage) + '</b>';
     }
 
     function startPipelineWatch() {
@@ -1013,7 +1014,7 @@ All 16 local recovery engines loaded and ready.
         const data = await res.json();
         const tools = data.tools || [];
         if (!tools.length) {
-          box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Could not check: ' + (data.error || 'no result') + '</div>';
+          box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Could not check: ' + esc(data.error || 'no result') + '</div>';
           return;
         }
         let html = '';
@@ -1022,21 +1023,21 @@ All 16 local recovery engines loaded and ready.
           const tag = t.latest ? (t.latest + (t.prerelease ? ' (pre-release)' : '')) : '';
           html += '<div class="tool-item" style="align-items:flex-start;">'
                 + '<div class="tool-meta" style="flex:1;">'
-                + '<h4>' + t.name + '</h4><p>' + t.role + '</p>'
-                + '<p style="margin-top:4px;font-size:11px;">Installed: ' + t.installed
-                + (tag ? ' &nbsp;|&nbsp; Latest: <b>' + tag + '</b> (' + t.published + ')' : '') + '</p>'
-                + '<p style="margin-top:2px;font-size:11px;color:' + c + ';">' + t.note + '</p>'
-                + '<div id="bar-' + t.name + '" style="display:none;margin-top:8px;">'
-                + '  <div class="progress-track"><div id="fill-' + t.name + '" class="progress-fill" style="width:0%"></div></div>'
-                + '  <div id="msg-' + t.name + '" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>'
+                + '<h4>' + esc(t.name) + '</h4><p>' + esc(t.role) + '</p>'
+                + '<p style="margin-top:4px;font-size:11px;">Installed: ' + esc(t.installed)
+                + (tag ? ' &nbsp;|&nbsp; Latest: <b>' + esc(tag) + '</b> (' + esc(t.published) + ')' : '') + '</p>'
+                + '<p style="margin-top:2px;font-size:11px;color:' + c + ';">' + esc(t.note) + '</p>'
+                + '<div id="bar-' + esc(t.name) + '" style="display:none;margin-top:8px;">'
+                + '  <div class="progress-track"><div id="fill-' + esc(t.name) + '" class="progress-fill" style="width:0%"></div></div>'
+                + '  <div id="msg-' + esc(t.name) + '" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>'
                 + '</div>'
                 + '</div>'
                 + '<div style="text-align:right;min-width:160px;">'
-                + '<div style="font-weight:800;font-size:11px;color:' + c + ';">' + (UPDATE_LABELS[t.state] || t.state) + '</div>'
+                + '<div style="font-weight:800;font-size:11px;color:' + c + ';">' + esc(UPDATE_LABELS[t.state] || t.state) + '</div>'
                 + (t.can_install
-                    ? '<button class="btn btn-primary" style="margin-top:6px;font-size:11px;" onclick="installTool(\'' + t.name + '\')">Update now</button>'
+                    ? '<button class="btn btn-primary" style="margin-top:6px;font-size:11px;" onclick="installTool(\'' + esc(t.name) + '\')">Update now</button>'
                     : '')
-                + '<div style="margin-top:4px;"><a href="' + t.url + '" target="_blank" style="font-size:11px;color:var(--text-muted);">releases</a></div>'
+                + '<div style="margin-top:4px;"><a href="' + esc(/^https:\/\//.test(t.url) ? t.url : '#') + '" rel="noopener" target="_blank" style="font-size:11px;color:var(--text-muted);">releases</a></div>'
                 + '</div></div>';
         });
         html += '<div style="padding:10px;margin-top:8px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);">'
@@ -1045,7 +1046,7 @@ All 16 local recovery engines loaded and ready.
               + '</div>';
         box.innerHTML = html;
       } catch (e) {
-        box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Update check failed: ' + e + '</div>';
+        box.innerHTML = '<div style="padding:10px;color:var(--accent-rose);">Update check failed: ' + esc(e) + '</div>';
       }
     }
 
@@ -1095,10 +1096,10 @@ All 16 local recovery engines loaded and ready.
         item.className = 'tool-item';
         item.innerHTML = `
           <div class="tool-meta">
-            <h4>${t.name}</h4>
-            <p>${t.role}</p>
+            <h4>${esc(t.name)}</h4>
+            <p>${esc(t.role)}</p>
           </div>
-          <span style="font-weight:800;font-size:11px;color:${t.status.includes('PASS') ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${t.status}</span>
+          <span style="font-weight:800;font-size:11px;color:${t.status.includes('PASS') ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${esc(t.status)}</span>
         `;
         container.appendChild(item);
       });

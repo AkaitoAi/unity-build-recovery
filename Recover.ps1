@@ -15,6 +15,8 @@ function Invoke-WithRetry([scriptblock]$Operation) {
         try { return (& $Operation) }
         catch {
             if ($attempt -eq $Attempts) { throw }
+            # These failures repeat identically, so retrying only multiplies the wait.
+            if ($_.Exception.Message -match 'timed out|requires both|produced no dump|Could not identify|was not found in the default|contains a symbolic link|checksum verification|unsafe archive') { throw }
             Write-Warning "Attempt $attempt failed. $($_.Exception.Message)"
             Start-Sleep -Seconds (5 * $attempt)
         }
@@ -107,11 +109,13 @@ foreach ($path in $InputPath) {
             $zip = Join-Path $job 'input.zip'
             Copy-Item -LiteralPath $source -Destination $zip
             $source = Join-Path $job 'extracted'
+            Assert-SafeArchive $zip
             Expand-Archive -LiteralPath $zip -DestinationPath $source
             if ($item.Extension -eq '.xapk') {
                 $parts = @(Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object Extension -In '.apk','.obb')
                 foreach ($part in $parts) {
                     Copy-Item -LiteralPath $part.FullName -Destination $zip -Force
+                    Assert-SafeArchive $zip
                     Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $source ([guid]::NewGuid().ToString()))
                 }
             }

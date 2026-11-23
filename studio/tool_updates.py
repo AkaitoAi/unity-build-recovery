@@ -205,6 +205,11 @@ def _newest_release(repo):
     }
 
 
+def _fixed_location(tool):
+    """True when the pipeline reads the tool from one fixed folder and ignores newer installs."""
+    return not (tool.get("npm") or tool.get("newest_file_in") or tool.get("newest_dir_prefix"))
+
+
 def check_updates(force=False):
     """One entry per tool: what is installed, what is current, and whether to update."""
     cache = _load_cache()
@@ -278,6 +283,11 @@ def check_updates(force=False):
                 entry["state"] = "current"
                 entry["note"] += f"Installed build matches the newest release ({latest['tag']})."
             entry["can_install"] = (bool(latest.get("download")) or bool(tool.get("npm")))  and entry["state"] in ("update", "missing")
+            if entry["can_install"] and _fixed_location(tool) and entry["state"] == "update":
+                # The pipeline reads this tool from one fixed folder, so a side-by-side install
+                # would never be used. Replace the folder by hand.
+                entry["can_install"] = False
+                entry["note"] += " Replace the tool folder by hand; the studio reads it from a fixed path."
 
         results.append(entry)
 
@@ -373,7 +383,12 @@ def install(name, progress=None):
 
     report(84, "Installing...")
     if latest["download_name"].lower().endswith(".zip"):
-        target = os.path.join(TOOLS_ROOT, f"{tool['name'].lower()}-{safe_tag}")
+        if _fixed_location(tool):
+            target = os.path.dirname(tool["marker"])  # the folder the pipeline actually reads
+            if os.path.isdir(target) and os.listdir(target):
+                raise RuntimeError(f"{target} already has files; replace it by hand.")
+        else:
+            target = os.path.join(TOOLS_ROOT, f"{tool['name'].lower()}-{safe_tag}")
         os.makedirs(target, exist_ok=True)
         import io
         base = os.path.realpath(target)

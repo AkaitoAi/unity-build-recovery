@@ -3,7 +3,8 @@
 Resolution order:
   1. RE_TOOLS environment variable (set by env.ps1 or by you).
   2. The folder above studio/, when it already holds the toolkit (it contains 7-Zip).
-  3. <repo>/.tools, the same cache the PowerShell CLI uses.
+  3. <repo>/.tools. The CLI also installs there, but under versioned folder names
+     (AssetRipper-2.0.0), so tools installed by the CLI are not found by the studio.
 """
 import os
 

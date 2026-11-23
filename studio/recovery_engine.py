@@ -5,7 +5,7 @@ Executes the full recovery pipeline completely offline:
 - Stage 1: Extraction via 7-Zip (with nested split APK unpacking)
 - Stage 2: Asset Ripping (AssetRipper / Web extractor)
 - Stage 3: Code Dumping (Il2CppDumper / Cpp2IL / Web assets)
-- Stage 4: Project Scaffolding & SDK Stubbing for 100% Playable Unity Build
+- Stage 4: Project scaffolding and SDK stubs (the result is not compiled or verified)
 - Stage 5: RECOVERY_REPORT.md generation
 """
 
@@ -67,6 +67,9 @@ class RecoveryPipeline:
 
     def run_stage_0_intake(self, info: dict) -> bool:
         self.log(f"--- [STAGE 0] Intake & Verification ---")
+        if os.path.isdir(self.input_file):
+            raise ValueError("Folders are not supported here. Give the Studio an APK, XAPK or ZIP, "
+                             "or use Recover.ps1 for Windows build folders.")
         self.create_directories()
 
         dest = os.path.join(self.dir_00_original, os.path.basename(self.input_file))
@@ -86,7 +89,11 @@ class RecoveryPipeline:
         self.log(f"--- [STAGE 1] Unpacking Package with 7-Zip ---")
         cmd = [SEVEN_ZIP, "x", self.input_file, f"-o{self.dir_01_extracted}", "-y"]
         self.log(f"Executing: {' '.join(cmd)}")
-        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                             stdin=subprocess.DEVNULL, timeout=3600)
+        if res.returncode != 0:
+            self.log(f"  7-Zip exited with code {res.returncode}: "
+                     f"{(res.stderr or res.stdout or '').strip()[:200]}")
 
         # If XAPK or split APKs, unpack inner APKs as well
         for root, dirs, files in os.walk(self.dir_01_extracted):
@@ -96,7 +103,9 @@ class RecoveryPipeline:
                     out_sub = os.path.join(root, "unpacked_" + os.path.splitext(f)[0])
                     self.log(f"Unpacking nested APK: {f} -> {out_sub}")
                     sub_cmd = [SEVEN_ZIP, "x", apk_path, f"-o{out_sub}", "-y"]
-                    subprocess.run(sub_cmd, capture_output=True)
+                    sub_res = subprocess.run(sub_cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=3600)
+                    if sub_res.returncode != 0:
+                        self.log(f"  7-Zip exited with code {sub_res.returncode} for {f}")
 
         count = sum(len(files) for _, _, files in os.walk(self.dir_01_extracted))
         self.log(f"Stage 1 Complete. Extracted {count} files to 01_extracted.")
@@ -420,12 +429,17 @@ class RecoveryPipeline:
             self.log(f"Found Metadata: {metadata_path}")
             dumper_exe = os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")
             if os.path.exists(dumper_exe):
-                self.log(f"Running Il2CppDumper...")
-                cmd = [dumper_exe, so_path, metadata_path, self.dir_03_il2cpp]
-                res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", cwd=self.dir_03_il2cpp)
-                for line in res.stdout.splitlines()[:15]:
-                    if line.strip():
-                        self.log(f"  [Il2CppDumper] {line.strip()}")
+                if os.path.exists(os.path.join(self.dir_03_il2cpp, "dump.cs")):
+                    self.log("Il2CppDumper output already present; not running it again.")
+                else:
+                    self.log(f"Running Il2CppDumper...")
+                    cmd = [dumper_exe, so_path, metadata_path, self.dir_03_il2cpp]
+                    # stdin is supplied because Il2CppDumper waits for a key press on exit.
+                    res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                         cwd=self.dir_03_il2cpp, input="\n", timeout=1800)
+                    for line in res.stdout.splitlines()[:15]:
+                        if line.strip():
+                            self.log(f"  [Il2CppDumper] {line.strip()}")
 
                 dump_cs = os.path.join(self.dir_03_il2cpp, "dump.cs")
                 if os.path.exists(dump_cs):
@@ -460,19 +474,10 @@ class RecoveryPipeline:
         return True
 
     def run_stage_4_scaffold_project(self, info: dict) -> bool:
-        self.log(f"--- [STAGE 4] Rebuilding 100% Playable Project Structure ---")
-
-        # 1. Scaffold Unity Project (Structure, Packages, GameCore.asmdef, AutoSDKStubber)
-        scaffold_results = scaffold_unity_project(
-            project_dir=self.dir_05_project,
-            detected_unity_ver=info.get("unity_version", "2022.3.62f3"),
-            game_title=info.get("name", "RecoveredGame")
-        )
-        self.log(f"Matched Unity Editor Version: {scaffold_results['editor_version']}")
-        self.log(f"Generated clean Packages/manifest.json and GameCore.asmdef")
-        self.log(f"Generated {len(scaffold_results['stubs_created'])} Missing SDK Stubs for 0-error compilation.")
+        self.log(f"--- [STAGE 4] Building Unity Project Folder ---")
 
         assets_dir = os.path.join(self.dir_05_project, "Assets")
+        os.makedirs(assets_dir, exist_ok=True)
 
         # 2. Copy Ripped Unity Assets if present.
         # AssetRipper writes a whole Unity project under ExportedProject/, so the assets sit a
@@ -513,6 +518,19 @@ class RecoveryPipeline:
         else:
             self.log("No ripped assets found to copy; the project will contain stubs only.")
 
+        # 3. Scaffold the project folder (runs after the copy so it can see the game's own SDKs)
+        scaffold_results = scaffold_unity_project(
+            project_dir=self.dir_05_project,
+            detected_unity_ver=info.get("unity_version", ""),
+            game_title=info.get("name", "RecoveredGame")
+        )
+        self.log(f"Matched Unity Editor Version: {scaffold_results['editor_version']}")
+        if not scaffold_results["version_exact"]:
+            self.log("WARNING: the game's exact Unity version is not installed; Unity will upgrade the project on open.")
+        self.log(f"Generated Packages/manifest.json and GameCore.asmdef")
+        self.log(f"Generated {len(scaffold_results['stubs_created'])} placeholder SDK stub(s); compilation is not verified.")
+
+
         # 3. Create 1-Click Unity Launch Script
         target_unity_exe = None
         for ver, exe in INSTALLED_EDITORS:
@@ -545,7 +563,7 @@ class RecoveryPipeline:
                     d = os.path.join(dist_dir, rel)
                     os.makedirs(os.path.dirname(d), exist_ok=True)
                     shutil.copy2(s, d)
-            web_runner = setup_playable_web_runner(self.dir_05_project, dist_dir, info.get("name", "WebGame"))
+            web_runner = setup_playable_web_runner(self.work_folder, dist_dir, info.get("name", "WebGame"))
             self.log(f"Created Playable Web Runner: {web_runner}")
 
         return True
