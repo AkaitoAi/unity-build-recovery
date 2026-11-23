@@ -73,6 +73,16 @@ Use a new, empty workspace folder for each game. The studio records the package 
 
 The Script Studio tab lists the C# that AssetRipper recovered. Step 5 copies those files into the project, so "Export Selected" only adds scripts from elsewhere (it skips files already in the project, `dump.cs` and unselected ones) and renames name clashes instead of overwriting.
 
+### Agent recovery (optional)
+
+The **Agent Recovery** tab lets an AI coding agent do the recovery instead of the fixed pipeline. Press "Detect agents": the studio looks on PATH for Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot CLI, opencode, Grok Build, Qwen Code, goose and aider, shows the version of each one it finds, and lets you pick one. It then writes `AGENT_TASK.md` (package, workspace, tool paths, rules and steps) into the workspace and opens the agent in its own console window in that folder.
+
+- You approve the agent's actions in that window as usual. The studio never passes an auto-approve option.
+- Claude Code, Codex and Gemini CLI start with a one-line first message that points at `AGENT_TASK.md`. For the others the studio does not know the start-up flags, so it opens the agent empty and shows the line to paste.
+- The package and everything extracted from it are untrusted, and a hostile build can contain text aimed at the agent. What the agent reads goes to its provider, so tick the confirmation only for builds you may share.
+- Windows build folders work in this mode, unlike the Studio's built-in pipeline.
+- The agent is not tracked by the studio. It does not hold the run lock, so do not run the built-in pipeline in the same workspace at the same time.
+
 ### Security notes
 
 The server accepts only requests that come from its own page: it checks the Host and Origin headers and a token generated at each launch. It needs a full-path workspace (not a drive root, and not inside the studio or tool folders), limits file reads and script copies to that workspace, and runs one recovery or install at a time. Any program on your PC that can reach `127.0.0.1:5899` can fetch the page and its token, so do not run the studio on a shared machine. Tool installs from the Tools tab are extracted to a temporary folder and moved into place only if they contain the expected files. They must match the SHA-256 digest published with the GitHub release, and zip paths are checked before extraction. REA, which installs through npm, has no digest check; the install runs with `--ignore-scripts`. A digest from the same release page detects a corrupted download, not a compromised release.

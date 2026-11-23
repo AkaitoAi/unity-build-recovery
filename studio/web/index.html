@@ -521,6 +521,7 @@
   <nav>
     <button class="nav-btn active" onclick="switchNav('wizard')">🚀 Recovery Pipeline Wizard</button>
     <button class="nav-btn" onclick="switchNav('scripts')">🧠 AI Semantic Script Studio</button>
+    <button class="nav-btn" onclick="switchNav('agent')">🤖 Agent Recovery</button>
     <button class="nav-btn" onclick="switchNav('craft')">✨ Craft Anything</button>
     <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health (16/16)</button>
     <button class="nav-btn" onclick="switchNav('console')">📜 Live Diagnostic Console</button>
@@ -699,6 +700,28 @@
       </div>
     </div>
 
+    <!-- TAB: AGENT RECOVERY -->
+    <div id="pane-agent" class="tab-pane">
+      <div class="card">
+        <div class="card-title"><span>🤖 Let an AI coding agent do the recovery</span>
+          <button class="btn" onclick="agentsLoad()">Detect agents</button></div>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+          The studio writes <code>AGENT_TASK.md</code> into your workspace and opens the agent you pick in its own console window, in that folder.
+          You answer its permission prompts there; the studio never turns on auto-approve. The package and tool output are untrusted, and
+          what the agent reads goes to its provider. The package and workspace come from the Recovery tab (Windows build folders work here).
+        </p>
+        <div id="agent-list" style="display:flex;flex-direction:column;gap:6px;font-size:13px;">Press "Detect agents".</div>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0;font-size:12px;">
+          <input type="checkbox" id="agent-confirm">
+          <span>I understand the selected agent will read this package and the recovered files and send them to its provider, and I may share them.</span>
+        </label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-primary" onclick="agentLaunch()">Open selected agent</button>
+          <span id="agent-status" style="font-size:12px;color:var(--text-muted);"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- TAB: CRAFT ANYTHING -->
     <div id="pane-craft" class="tab-pane">
       <div class="card">
@@ -769,6 +792,44 @@ All 16 local recovery engines loaded and ready.
 
       if (tabName === 'tools') loadToolsHealth();
       if (tabName === 'scripts' && scriptsData.length === 0) scanScripts();
+    }
+
+    // ---- Agent recovery ----
+    async function agentsLoad() {
+      const box = document.getElementById('agent-list');
+      box.innerText = 'Detecting...';
+      const res = await fetch('/api/agents');
+      const data = await res.json();
+      box.innerHTML = '';
+      (data.agents || []).forEach((a, i) => {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:10px;align-items:center;' + (a.installed ? '' : 'opacity:.45;');
+        const radio = document.createElement('input');
+        radio.type = 'radio'; radio.name = 'agent-choice'; radio.value = a.id; radio.disabled = !a.installed;
+        if (a.installed && !box.querySelector('input:checked')) radio.checked = true;
+        const text = document.createElement('span');
+        text.innerHTML = '<b>' + esc(a.name) + '</b> ' +
+          (a.installed ? esc(a.version) + ' <span style="color:var(--text-muted)">' + esc(a.path) + '</span>' +
+             (a.can_start_with_task ? '' : ' <i>(opens empty; you paste one line)</i>')
+           : '<i>not installed</i>');
+        row.appendChild(radio); row.appendChild(text); box.appendChild(row);
+      });
+      if (!box.querySelector('input:not(:disabled)')) box.insertAdjacentHTML('beforeend', '<div>No supported agent was found on PATH.</div>');
+    }
+    async function agentLaunch() {
+      const chosen = document.querySelector('input[name=agent-choice]:checked');
+      if (!chosen) return alert('Detect agents and pick an installed one first.');
+      const src = document.getElementById('input-source').value.trim();
+      const dest = document.getElementById('input-work').value.trim();
+      if (!src || !dest) return alert('Choose the package and a workspace folder on the Recovery tab first.');
+      const res = await fetch('/api/agents/launch', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({agent: chosen.value, source: src, destination: dest,
+                              confirm_send: document.getElementById('agent-confirm').checked})});
+      const data = await res.json();
+      const status = document.getElementById('agent-status');
+      if (!res.ok) { status.innerText = ''; return alert(data.message || 'Could not start.'); }
+      status.innerText = data.agent + ' opened in a new window. Task file: ' + data.task_file +
+        (data.paste_this ? '  Paste into the agent: ' + data.paste_this : '');
     }
 
     // ---- Craft Anything ----

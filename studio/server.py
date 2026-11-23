@@ -22,6 +22,7 @@ if APP_DIR not in sys.path:
 
 from paths import TOOLS_ROOT
 import craft
+import agents
 from scanner import inspect_game
 from script_ai_selector import scan_and_classify_directory, export_selected_scripts, ScriptItem
 from recovery_engine import RecoveryPipeline
@@ -229,6 +230,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"tools": check_updates(force=query.get("force", ["0"])[0] == "1")})
             except Exception as exc:
                 self.send_json({"tools": [], "error": f"{type(exc).__name__}: {exc}"})
+        elif path == "/api/agents":
+            self.send_json({"agents": agents.detect()})
         elif path == "/api/craft/agents":
             query = urllib.parse.parse_qs(parsed.query)
             self.send_json(craft.list_agents(query.get("cli", [""])[0]))
@@ -311,6 +314,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             else:
                 threading.Thread(target=run_install, args=(name,), daemon=True).start()
                 self.send_json({"status": "started", "tool": name})
+        elif path == "/api/agents/launch":
+            self.handle_agent_launch(body)
         elif path == "/api/craft/run":
             self.handle_craft_run(body)
         elif path == "/api/craft/stop":
@@ -521,6 +526,21 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         # 2. Scaffold Unity project and generate missing SDK stubs
         res = scaffold_unity_project(proj_dir, body.get("unity_version", ""), "RecoveredGame")
         self.send_json({"status": "playable_ready", "results": res, "gameplay_scripts_exported": len(gameplay_items)})
+
+    def handle_agent_launch(self, body):
+        if body.get("confirm_send") is not True:
+            raise ValueError("Confirm that the agent will read the package and its output and send it to its provider.")
+        src = str(body.get("source", "")).strip()
+        if not src or not os.path.exists(src):
+            raise ValueError("The package does not exist.")
+        work_folder = resolve_work(body.get("destination", ""))
+        with PIPELINE_LOCK:
+            if PIPELINE_STATE["running"] or install_snapshot()["running"] or craft.is_running():
+                self.send_json({"status": "busy", "message": "Another run or install is in progress."}, status=409)
+                return
+        info = inspect_game(src)
+        result = agents.launch(str(body.get("agent", "")), src, work_folder, info)
+        self.send_json({"status": "started", **result})
 
     def handle_craft_run(self, body):
         if body.get("confirm_send") is not True:
