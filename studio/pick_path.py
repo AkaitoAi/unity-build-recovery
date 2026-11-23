@@ -29,7 +29,7 @@ def main():
                 parent=root,
                 title="Select Game Package",
                 filetypes=[
-                    ("Game Packages", "*.xapk *.apk *.apks *.zip"),
+                    ("Game Packages", "*.xapk *.apk *.apks *.zip *.pck *.exe"),
                     ("All Files", "*.*"),
                 ],
             )

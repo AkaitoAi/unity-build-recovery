@@ -126,6 +126,8 @@ def _tool_lines() -> str:
         ("AssetRipper (headless export)", os.path.join(TOOLS_ROOT, "AssetRipper", "AssetRipper.GUI.Free.exe")),
         ("Il2CppDumper", os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")),
         ("Cpp2IL", os.path.join(TOOLS_ROOT, "Cpp2IL")),
+        ("GDRE Tools (Godot recovery: gdre_tools --headless --recover=<pck/exe/apk> --output=<dir>)",
+         os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe")),
         ("JADX", os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat")),
         ("Ghidra", os.path.join(TOOLS_ROOT, "ghidra")),
         ("AssetStudioMod CLI", os.path.join(TOOLS_ROOT, "AssetStudioModCLI")),
@@ -136,7 +138,7 @@ def _tool_lines() -> str:
 
 
 def build_task(source: str, work_folder: str, info: dict) -> str:
-    return f"""# Unity recovery task
+    return f"""# Game recovery task
 
 You are the recovery engineer for one game. Work only inside the workspace folder below,
 and ask the user before anything that is not listed here.
@@ -165,6 +167,13 @@ and ask the user before anything that is not listed here.
    import and compile log has been read. If that is not possible, say so.
 
 ## Steps
+
+If the engine above is Godot, use GDRE Tools instead of the Unity steps: copy the package to
+`00_original`, run GDRE's headless full recovery into `05_project`, check that `project.godot`
+exists, and report the Godot version GDRE detected. A Godot game that is encrypted needs its key;
+ask the user, never guess or brute-force it.
+
+If the engine is Unity (or unknown), follow these steps:
 
 1. Intake: copy the package to `00_original`, record size and SHA-256.
 2. Unpack it into `01_extracted` (an APK, XAPK or OBB is a ZIP).

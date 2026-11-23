@@ -25,6 +25,17 @@ The two do not share code, tool folders or report formats. The earlier CLI-only 
 
 ## Aether Recon Studio
 
+### Supported engines
+
+| Engine | Input | What you get back | Tool |
+| --- | --- | --- | --- |
+| Unity (Mono and IL2CPP) | APK, XAPK, ZIP | Assets, scenes, C# for Mono; type and method layout (not method bodies) for IL2CPP; a Unity project folder to finish by hand | AssetRipper, Il2CppDumper, Cpp2IL, JADX |
+| Godot | APK, PCK, or an EXE with an embedded PCK | A Godot project folder (`project.godot`, scenes, resources, scripts decompiled where the version is supported) | GDRE Tools |
+
+Other engines are not recovered yet. The studio detects Godot by a `.pck` file, `libgodot` or an embedded `GDPC` footer. An encrypted Godot game needs its encryption key, and the studio does not take a key yet, so it reports the failure and stops.
+
+**Missing tools.** The studio never downloads anything on its own. If a game needs a tool that is not installed, the recovery stops before it creates anything and shows the tool, version, size, download address and SHA-256. Press OK to let the studio download it, check the SHA-256 and install it; press Cancel and nothing is downloaded. Tools whose release publishes no SHA-256 (for example Il2CppDumper) are not downloaded; you install them by hand. 7-Zip is always installed by hand.
+
 A Python UI that scans an APK, XAPK or ZIP, unpacks it, runs the recovery tools in order, lets you pick which recovered scripts to keep, and builds a Unity project folder. Folders are not supported: for a Windows build folder use `Recover.ps1`.
 
 ### Requirements
