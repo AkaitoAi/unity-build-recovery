@@ -109,7 +109,7 @@ def _unity_plan(source: str, work: str, info: dict) -> str:
    `02_assetripper\\ExportedProject` into `05_project`. Keep the rip's `ProjectVersion.txt`. Do not add
    stub scripts for SDKs unless a script clearly needs one and the real SDK is absent. Do NOT open or
    import the project in the Unity Editor yourself: importing runs recovered code. Leave that to the user.
-7. **Report.** Write `reports\\RECOVERY_REPORT.md` (see the end of this prompt).
+7. **Audit, repair, report.** Follow the audit and repair sections below, then write the final report.
 
 Tools for this plan:
 {_tool_list(["7z", "assetripper", "ripscript", "il2cppdumper", "cpp2il", "jadx", "ilspy"])}
@@ -129,8 +129,8 @@ def _godot_plan(source: str, work: str, info: dict) -> str:
    errors, run `--decompile` on those files and say which ones failed.
 4. **If it failed.** Try `--extract=<package> --output="{work}\\05_project_raw"` to see what the package
    holds, then retry the recovery. If the log says the package is encrypted, that is a hard blocker (below).
-5. **Report.** Write `reports\\RECOVERY_REPORT.md` (see the end of this prompt). Tell the user which Godot
-   editor version to open the project with.
+5. **Audit, repair, report.** Follow the audit and repair sections below, then write the final report. Tell
+   the user which Godot editor version to open the project with.
 
 Tools for this plan:
 {_tool_list(["gdre", "7z"])}
@@ -150,7 +150,8 @@ The scanner did not recognise the engine, so work it out first.
 3. **Recover what the installed tools can.** Unity and Godot have full plans in the studio; for any other
    engine, extract the readable assets and code you can (JADX for Java, plain extraction for JavaScript
    bundles), and list exactly which tool a proper recovery of that engine would need. Do not download tools.
-4. **Report.** Write `reports\\RECOVERY_REPORT.md` (see the end of this prompt).
+4. **Audit, repair, report.** Follow the audit and repair sections below (use the generic items), then write
+   the final report.
 
 Tools you have:
 {_tool_list(["7z", "jadx", "ilspy"])}
@@ -204,6 +205,80 @@ Commands that suit this game:
 """ + "\n".join(f"- {h}" for h in hints) + "\n\n"
 
 
+def _audit_items(info: dict) -> str:
+    engine = info.get("engine", "")
+    if engine == "Godot":
+        return """1. **Inventory:** count scenes (`.tscn`), resources (`.tres`), scripts (`.gd`, and any leftover `.gdc`),
+   textures, audio and fonts in `05_project`.
+2. **Main scene:** `project.godot` names a `run/main_scene`, and that file exists.
+3. **Missing resources:** every `res://` path used in `.tscn`, `.tres`, `.gd` (`preload`, `load`, `ext_resource`)
+   exists in `05_project`. Count and list the missing ones.
+4. **Autoloads:** every autoload named in `project.godot` exists.
+5. **Script sanity:** `.gdc` files that were not decompiled, and scripts with decompiler error comments.
+6. **Native extensions:** list any `.dll` or `.so` (GDExtension, plugins) the project depends on.
+7. **Recovery log:** count the warnings and errors in `gdre_export.log` and list the distinct ones."""
+    items = """1. **Inventory:** count scenes (`.unity`), prefabs, scripts (`.cs`), textures, audio clips, materials and
+   animations under `05_project\\Assets`.
+2. **Missing scripts:** every `m_Script: {fileID: ..., guid: <guid>}` in scenes and prefabs whose guid has no
+   matching script `.meta` file. Count them and list the scenes and prefabs worst affected.
+3. **Missing asset references:** any other `guid:` in scenes, prefabs and materials with no matching `.meta`
+   file (ignore Unity's built-in guids that start with `0000000000000000`).
+4. **Duplicate types:** the same class, struct or enum name defined in more than one `.cs` file in the same
+   namespace (a typical compile error when stub scripts repeat a real SDK's types). List them.
+5. **Script sanity:** unbalanced braces, decompiler error comments (`/* Error`, `// ERROR`), and compiler-
+   generated names that make code unreadable in more than a few lines.
+6. **Build settings:** `ProjectSettings\\EditorBuildSettings.asset` lists at least one enabled scene, each
+   listed scene file exists, and you can name the main (first) scene.
+7. **Packages:** namespaces the scripts use (`TMPro`, `UnityEngine.UI`, `Unity.InputSystem`, `Cinemachine`,
+   `UnityEngine.Rendering.Universal`, `UnityEngine.Purchasing`) against `Packages\\manifest.json`; list missing ones.
+8. **Online and third-party SDKs:** where the code uses ads, analytics, purchases, login, cloud saves or
+   multiplayer (Firebase, GoogleMobileAds, AppLovin, IronSource, Unity IAP, Facebook, Photon, PlayFab,
+   GameAnalytics, Adjust, AppsFlyer, Unity Services). List each SDK and where it is used."""
+    if info.get("has_il2cpp"):
+        items += """
+9. **Logic gap (IL2CPP):** classes in `dump.cs` that have methods but no source under `Assets`. Count the
+   classes and methods, and list the 30 that scenes and prefabs reference most (script guid -> class name)."""
+    return items
+
+
+def _audit_sections(info: dict) -> str:
+    return f"""## Audit what you recovered
+
+When the recovery steps are done, audit the result like a sceptical reviewer. Write small analysis scripts into
+`reports\\audit\\` (Python if `python` is on PATH, otherwise PowerShell) and run them. **They may only read files:
+never run, import or load game code, and never use the network.**
+
+Work out these numbers, and write them to `reports\\AUDIT.json` and a readable `reports\\AUDIT.md`:
+
+{_audit_items(info)}
+
+Run the audit once after recovery (the "before" numbers) and again after every repair round.
+
+## Repair what the evidence supports (bounded)
+
+- **Never edit `05_project`.** Copy it to `06_playable` first (`robocopy`) and work there. Log every change in
+  `reports\\CHANGES.md`: the file, what changed, why, and the evidence (a tool output, a log line, a function).
+- **At most three repair rounds.** Each round: take the findings that can be fixed from evidence, fix them,
+  re-run the audit and compare. Stop early when a round improves no number. Typical repairs: delete a stub that
+  duplicates a real type, add a missing package to `manifest.json`, re-link a script reference when exactly one
+  script of that name exists, set a main scene in Build Settings when it is empty, re-decompile a method whose
+  output has an error comment (ILSpy, or REA's decompile) and replace it.
+- **Tag every code change** with one of these words in a comment and in `CHANGES.md`: `RECOVERED` (tool output,
+  unchanged), `REPAIRED` (fixed from evidence), `RECONSTRUCTED` (rewritten from the decompiler output of that
+  same function), `STUBBED` (a placeholder so it builds or works offline), `INVENTED` (no evidence; behaviour
+  guessed). Prefer a smaller change you can justify over a bigger one you cannot.
+- **Online features:** make them offline-safe with a clearly marked `STUBBED` shim that returns fixed values.
+  Never invent what a server would answer, and list each one in the checklist.
+- **IL2CPP only, time-boxed:** you may reconstruct logic for at most 15 classes, taken from the "logic gap"
+  list, starting with what the main scene needs. Each must cite the function (REA or Ghidra output, or
+  `dump.cs` signature) it came from. With no function evidence, write the smallest `INVENTED` body and say so.
+  Do not design gameplay the original did not have.
+- **Do not open, import or run the project in the Unity or Godot editor, and do not run the game.** That
+  executes recovered code. The user does that step, so say exactly what to check there.
+
+"""
+
+
 def build_prompt(source: str, work: str, info: dict, rea: dict = None, rea_via_mcp: bool = False) -> str:
     engine = info.get("engine", "")
     if engine == "Unity":
@@ -214,9 +289,10 @@ def build_prompt(source: str, work: str, info: dict, rea: dict = None, rea_via_m
         plan = _other_plan(source, work, info)
     rea_block = _rea_section(info, rea, rea_via_mcp) if rea else ""
 
-    return f"""# Recover this game: work through every step without asking me anything
+    return f"""# Recover this game, audit what you recovered, and repair what you can
 
-You are the recovery engineer for one game, working alone. The user is not watching. Finish the whole job.
+You are the recovery engineer for one game, working alone. The user is not watching. Finish the whole job:
+recover it, audit the result, run the bounded repair rounds, and write the final report.
 
 ## The game
 
@@ -226,8 +302,8 @@ You are the recovery engineer for one game, working alone. The user is not watch
 
 - **Do not ask the user questions and do not wait for confirmation.** When a choice is needed, pick the most
   reasonable option, write one line about it in `reports\\DECISIONS.md` (the choice and why), and continue.
-- **Keep going until every step below is done and the final report is written.** Do not stop after a stage to
-  summarise, and do not stop to ask whether to continue.
+- **Keep going until the recovery, the audit, the repair rounds and the final report are all done.** Do not
+  stop after a stage to summarise, and do not stop to ask whether to continue.
 - **If a step fails:** read the tool's log, try the fallback named in the step, and try at most three different
   approaches. Then record the failure in the report and move on to the next step. Come back to failed steps at
   the end if something you learned later could fix them.
@@ -247,10 +323,24 @@ You are the recovery engineer for one game, working alone. The user is not watch
 4. Never modify the original package.
 
 {plan}
-{rea_block}## Final report
+{rea_block}{_audit_sections(info)}## Final report
 
-Write `reports\\RECOVERY_REPORT.md` with: the result in one line (complete, partial or blocked); each step and
-whether it worked, with the command used and the file counts; what is exact, what is a stub or approximation,
-and what is missing; every decision from `DECISIONS.md`; and what the user should do next by hand. When it is
-written, print a five-line summary and stop.
+Write `reports\\RECOVERY_REPORT.md` with these parts:
+
+1. **Result level, honestly.** Choose one and say why:
+   - `L0 extracted`: the files were recovered, nothing more is claimed.
+   - `L1 audit clean`: the audit found no missing scripts, duplicate types, syntax problems or missing build
+     scene after repair.
+   - `L1 audit partial`: some findings remain (list the numbers).
+   You cannot run Unity or Godot, so **"compiles", "the scene loads" and "it plays" are Unverified**. Say so, and
+   do not write "working" or "playable" anywhere.
+2. **Before and after audit numbers**, one row per audit item.
+3. **Feature checklist.** One row for each scene, each gameplay system you can name from the scripts (group by
+   class name), and each online SDK. Status is one of: `Recovered`, `Repaired`, `Reconstructed`,
+   `Stubbed offline`, `Missing`, `Unverified`. Never use "Working". Add the evidence (file, function or log line).
+4. **What each step did**, the command used and the file counts; every decision from `DECISIONS.md`.
+5. **What the user does next:** open `06_playable` in the exact editor version, read the console, load the main
+   scene, and send the errors back so another round can fix them.
+
+When the report is written, print a five-line summary (level, audit numbers, biggest gaps) and stop.
 """
