@@ -557,6 +557,11 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "busy", "message": "Another run or install is in progress."}, status=409)
                 return
         info = inspect_game(src)
+        missing = tool_needs.missing_tools(info)
+        if missing:
+            self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
+                            "message": "Some tools this game needs are not installed."}, status=409)
+            return
         result = agents.launch(str(body.get("agent", "")), src, work_folder, info)
         self.send_json({"status": "started", **result})
 
