@@ -742,13 +742,13 @@ class RecoveryPipeline:
             lines.append(f"- **Unity Version**: {info.get('unity_version')}")
         lines.append(f"- **ABIs**: {', '.join(info.get('abis', []))}")
         lines.append("")
-        audit_file = os.path.join(self.dir_reports, "AUDIT_05_project.json")
+        audit_file = os.path.join(self.dir_reports, "STUDIO_AUDIT_05_project.json")
         if os.path.exists(audit_file):
             try:
                 with open(audit_file, "r", encoding="utf-8") as handle:
                     audited = json.load(handle)
                 lines.append(f"- **Studio audit**: {audited['summary']['level']} "
-                             f"({audited['summary']['total']} finding(s); details in AUDIT.md). It reads files only: "
+                             f"({audited['summary']['total']} finding(s); details in STUDIO_AUDIT.md). It reads files only: "
                              "it does not show that the project compiles, loads or plays.")
                 lines.append("")
             except (OSError, ValueError, KeyError):

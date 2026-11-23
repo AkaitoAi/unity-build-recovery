@@ -978,9 +978,14 @@ Local recovery tools are listed on the Tools tab.
     function renderAudit(report) {
       if (!report || !report.summary) return '<i>No audit yet. Press "Run audit".</i>';
       const s = report.summary, r = report.results || {};
-      const colour = s.level === 'L1 audit clean' ? 'var(--accent-emerald)' : (s.level === 'not audited' ? 'var(--text-muted)' : 'var(--accent-amber)');
+      const colour = s.level === 'L1 audit clean' ? 'var(--accent-emerald)' : (s.level === 'not audited' || s.level.indexOf('L0') === 0 ? 'var(--text-muted)' : 'var(--accent-amber)');
       let html = '<div style="margin-bottom:8px;"><b style="color:' + colour + ';font-size:14px;">' + esc(s.level) + '</b> &nbsp; ' +
-        esc(report.target) + ' &middot; ' + esc(report.created) + (report.partial ? ' &middot; <b>stopped at its time limit; counts are incomplete</b>' : '') + '</div>';
+        esc(report.target) + ' &middot; ' + esc(report.created) + '</div>';
+      if (report.stale) html += '<div style="margin-bottom:8px;color:var(--accent-rose);"><b>The project has changed since this audit.</b> Press "Run audit" for current numbers.</div>';
+      if (s.scan_complete === false) {
+        const skipped = Object.keys(s.skipped || {}).map(k => k.replace(/_/g, ' ') + ': ' + s.skipped[k]).join(', ');
+        html += '<div style="margin-bottom:8px;color:var(--accent-amber);"><b>The scan was not complete</b> (' + esc(skipped || 'it hit its time limit') + '), so the counts may be too low.</div>';
+      }
       if (r.error) return html + esc(r.error);
       html += '<table style="width:100%;border-collapse:collapse;">';
       Object.keys(s.findings).forEach(function (k) {
@@ -990,6 +995,7 @@ Local recovery tools are listed on the Tools tab.
       });
       html += '</table>';
       const notes = [];
+      if (s.caveats && Object.keys(s.caveats).some(k => s.caveats[k])) notes.push('Caveats keep this from plain "clean": they cannot be settled from the files alone.');
       if (r.unresolved_script_guids && r.unresolved_script_guids.count) notes.push(r.unresolved_script_guids.count + ' script reference(s) by GUID are not in the project (often Unity package scripts).');
       if (r.unresolved_asset_guids && r.unresolved_asset_guids.count) notes.push(r.unresolved_asset_guids.count + ' asset reference(s) by GUID are not in the project (may include package assets).');
       if (r.online_sdks && r.online_sdks.used && r.online_sdks.used.length) notes.push('Online SDKs used: ' + r.online_sdks.used.map(x => x.sdk).join(', ') + '.');
@@ -1082,12 +1088,18 @@ Local recovery tools are listed on the Tools tab.
         }
         if (p.running) {
           const done = (p.results || []).length;
-          rows.push(activityRow('run', 'Recovery: ' + (p.stage || 'starting') + (p.stage_total ? '  (step ' + Math.max(1, p.stage_index) + ' of ' + p.stage_total + ')' : ''),
-            p.stage_total ? done / p.stage_total * 100 : null,
-            (p.tool ? p.tool + ': ' : '') + (p.last_line || 'working') + (p.stage_total ? '' : ''), fmtTime(now - p.started_at)));
+          if (p.kind === 'audit') {
+            // An audit reads files and has no steps: a moving bar, not a made-up percentage.
+            rows.push(activityRow('run', p.stage || 'Audit', null, 'reading the project files', fmtTime(now - p.started_at)));
+          } else {
+            rows.push(activityRow('run', (p.kind === 'stage' ? 'Stage: ' : 'Recovery: ') + (p.stage || 'starting') + (p.stage_total ? '  (step ' + Math.max(1, p.stage_index) + ' of ' + p.stage_total + ')' : ''),
+              p.stage_total ? done / p.stage_total * 100 : null,
+              (p.tool ? p.tool + ': ' : '') + (p.last_line || 'working'), fmtTime(now - p.started_at)));
+          }
         } else if (p.finished_at && now - p.finished_at < recent) {
-          rows.push(activityRow(p.status === 'complete' ? 'done' : 'failed', 'Recovery ' + (p.status === 'complete' ? 'finished' : p.status),
-            100, p.message || '', fmtTime(p.finished_at - p.started_at)));
+          const what = p.kind === 'audit' ? 'Audit' : (p.kind === 'stage' ? 'Stage' : 'Recovery');
+          const good = p.status === 'complete';
+          rows.push(activityRow(good ? 'done' : 'failed', what + ' ' + (good ? 'finished' : p.status), 100, p.message || '', fmtTime(p.finished_at - p.started_at)));
         }
         if (ins.running) {
           rows.push(activityRow('run', 'Download / install: ' + (ins.tool || ''), ins.percent > 0 ? ins.percent : null,
@@ -1244,6 +1256,12 @@ Local recovery tools are listed on the Tools tab.
         }
         stopPipelineWatch();
         setActiveTool('', '');
+        if (out.status === 'error' && !(out.stages || []).length) {
+          // The request was refused (bad workspace, a folder, a package that does not exist): no run happened.
+          logMessage('Recovery was not started: ' + (out.message || 'the request was refused.'));
+          alert('Recovery was not started.\n\n' + (out.message || 'The request was refused.'));
+          return;
+        }
         // The server now reports what each stage actually produced, so say so rather than
         // announcing success regardless of the outcome.
         (out.stages || []).forEach(function (st) {

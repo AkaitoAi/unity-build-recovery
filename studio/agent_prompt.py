@@ -21,6 +21,14 @@ def _exists(path: str) -> bool:
     return bool(path) and os.path.exists(path)
 
 
+def _newest_in_tool_root(*pattern_parts) -> str:
+    """Newest match of a path pattern under the tool root, for tools the studio installs into
+    versioned folders (jadx-v1.5.6) or files (Cpp2IL-2022.1.exe)."""
+    import glob
+    matches = glob.glob(os.path.join(TOOLS_ROOT, *pattern_parts))
+    return sorted(matches, reverse=True)[0] if matches else ""
+
+
 def _tools() -> dict:
     cpp2il = ""
     cpp2il_dir = os.path.join(TOOLS_ROOT, "Cpp2IL")
@@ -33,7 +41,8 @@ def _tools() -> dict:
         "ripscript": os.path.join(STUDIO_DIR, "scripts", "assetripper-headless.ps1"),
         "il2cppdumper": os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe"),
         "cpp2il": cpp2il,
-        "jadx": os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat"),
+        "jadx": (os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat") if os.path.exists(os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat"))
+                 else _newest_in_tool_root("jadx*", "bin", "jadx.bat") or os.path.join(TOOLS_ROOT, "jadx", "bin", "jadx.bat")),
         "ilspy": os.path.join(TOOLS_ROOT, "ILSpy"),
         "gdre": os.path.join(TOOLS_ROOT, "gdre_tools", "gdre_tools.exe"),
     }
@@ -90,21 +99,51 @@ def _unity_plan(source: str, work: str, info: dict) -> str:
         "Identify the backend first: IL2CPP has `libil2cpp.so` (or `GameAssembly.dll`) plus "
         "`global-metadata.dat`; Mono has `Assembly-CSharp.dll`. Then do the matching code recovery."
     )
-    return f"""## Plan for this game ({kind})
-
-1. **Intake.** Create the folders `00_original`, `01_extracted`, `02_assetripper`, `03_scripts`,
+    is_folder = os.path.isdir(source)
+    if is_folder:
+        intake = (f"""1. **Intake.** Create the folders `00_original`, `01_extracted`, `02_assetripper`, `03_scripts`,
+   `03_il2cpp`, `04_jadx`, `05_project`, `reports` inside the workspace. The package is a folder (a Windows
+   build), so it has no single hash: record the file count and total size instead. Never modify the original.
+2. **Copy.** `robocopy "{source}" "{work}\\01_extracted" /E` (a folder needs no unpacking, and 7-Zip is not
+   needed). Find `*_Data\\il2cpp_data\\Metadata\\global-metadata.dat` and `GameAssembly.dll` (IL2CPP), or
+   `*_Data\\Managed\\Assembly-CSharp.dll` (Mono).""")
+    else:
+        intake = (f"""1. **Intake.** Create the folders `00_original`, `01_extracted`, `02_assetripper`, `03_scripts`,
    `03_il2cpp`, `04_jadx`, `05_project`, `reports` inside the workspace. Copy the package into
    `00_original` and confirm its SHA-256 matches the one above. Never modify the original.
 2. **Unpack.** `"{t['7z']}" x "{source}" -o"{work}\\01_extracted" -y`. For an XAPK or a package holding
-   nested `.apk` files, unpack each nested APK into `unpacked_<name>` beside it.
-3. **Identify.** Confirm the Unity version (`globalgamemanagers`, `data.unity3d`, `boot.config` or
+   nested `.apk` files, unpack each nested APK into `unpacked_<name>` beside it.""")
+    if il2cpp:
+        middle = f"""3. **Identify.** Confirm the Unity version (`globalgamemanagers`, `data.unity3d`, `boot.config` or
+   `unity default resources`). If the scanner above is wrong or blank, correct it and note it in `reports\\DECISIONS.md`.
+4. **Code first (IL2CPP).** Find `libil2cpp.so` (prefer the arm64-v8a folder) or `GameAssembly.dll`, and
+   `global-metadata.dat`, under `01_extracted`, then run
+   `"{t['il2cppdumper']}" "<libil2cpp.so or GameAssembly.dll>" "<global-metadata.dat>" "{work}\\03_il2cpp"`
+   Copy `dump.cs` into `03_scripts`. If it fails on the metadata version, run Cpp2IL
+   (`"{t['cpp2il']}" --help` first to read its options) to write dummy assemblies into `03_il2cpp`.
+   **Then copy the `DummyDll\\*.dll` files into the game's `Managed` folder** (the folder holding or beside
+   `Assembly-CSharp.dll`; create it next to `il2cpp_data` if it does not exist). Without them AssetRipper cannot
+   name the scripts and every exported script comes out as an empty "Dummy class".
+   Method bodies of IL2CPP games cannot be recovered: only type and method layout.
+5. **Assets and scenes, after the code step.** Run the bundled script (it starts AssetRipper headless on a free port):
+   `powershell -NoProfile -ExecutionPolicy Bypass -File "{t['ripscript']}" -InputPath "{work}\\01_extracted" -OutputPath "{work}\\02_assetripper" -AssetRipperExe "{t['assetripper']}"`
+   If the export is empty, try the data folder only, then the nested APKs one by one.
+   If the package has Java code (`classes*.dex`), run `"{t['jadx']}" -d "{work}\\04_jadx" --no-res <each apk>`."""
+    else:
+        middle = f"""3. **Identify.** Confirm the Unity version (`globalgamemanagers`, `data.unity3d`, `boot.config` or
    `unity default resources`) and the backend. If the scanner above is wrong or blank, correct it
    and note it in `reports\\DECISIONS.md`.
-4. **Assets and scenes.** Run the bundled script (it starts AssetRipper headless on a free port):
+4. **Assets, scenes and scripts.** Run the bundled script (it starts AssetRipper headless on a free port):
    `powershell -NoProfile -ExecutionPolicy Bypass -File "{t['ripscript']}" -InputPath "{work}\\01_extracted" -OutputPath "{work}\\02_assetripper" -AssetRipperExe "{t['assetripper']}"`
    If the export is empty, try the data folder only (`assets\\bin\\Data`), then the nested APKs one by one.
 5. **Code.** {code_step}
-   If the package has Java code (`classes*.dex`), run `"{t['jadx']}" -d "{work}\\04_jadx" --no-res <each apk>`.
+   AssetRipper's `ExportedProject\\Assets\\Scripts` already holds the recovered C# for a Mono game, so a separate
+   decompiler is optional: use ILSpy only to re-decompile a method that came out wrong.
+   If the package has Java code (`classes*.dex`), run `"{t['jadx']}" -d "{work}\\04_jadx" --no-res <each apk>`."""
+    return f"""## Plan for this game ({kind})
+
+{intake}
+{middle}
 6. **Assemble.** Copy `Assets`, `Packages` and `ProjectSettings` from
    `02_assetripper\\ExportedProject` into `05_project`. Keep the rip's `ProjectVersion.txt`. Do not add
    stub scripts for SDKs unless a script clearly needs one and the real SDK is absent. Do NOT open or
@@ -122,14 +161,18 @@ def _godot_plan(source: str, work: str, info: dict) -> str:
 
 1. **Intake.** Create `00_original`, `05_project` and `reports` inside the workspace. Copy the package into
    `00_original` and confirm its SHA-256 matches the one above. Never modify the original.
-2. **Recover.** `"{t['gdre']}" --headless --recover="{work}\\00_original\\{os.path.basename(source)}" --output="{work}\\05_project"`
+2. **Pick what GDRE reads.** GDRE reads a `.pck`, an `.exe` with an embedded pck, or an `.apk`: not an `.xapk`,
+   `.zip` or `.apks`. If the package is one of those containers, copy it to a `.zip` name, expand it with
+   PowerShell `Expand-Archive` (or 7-Zip if installed) into `01_extracted`, and use the largest `.pck` inside, or
+   else the `.apk` that holds a `.pck` or `libgodot`.
+3. **Recover.** `"{t['gdre']}" --headless --recover="<the pck, exe or apk from step 2, or the copy in {work}\\00_original>" --output="{work}\\05_project"`
    Read the tool's own log for the Godot version it detected.
-3. **Check.** `05_project\\project.godot` must exist, with scenes (`.tscn`), resources and scripts (`.gd`).
+4. **Check.** `05_project\\project.godot` must exist, with scenes (`.tscn`), resources and scripts (`.gd`).
    Count what was recovered by type. If scripts came back as bytecode (`.gdc`) or the decompile reported
    errors, run `--decompile` on those files and say which ones failed.
-4. **If it failed.** Try `--extract=<package> --output="{work}\\05_project_raw"` to see what the package
+5. **If it failed.** Try `--extract=<package> --output="{work}\\05_project_raw"` to see what the package
    holds, then retry the recovery. If the log says the package is encrypted, that is a hard blocker (below).
-5. **Audit, repair, report.** Follow the audit and repair sections below, then write the final report. Tell
+6. **Audit, repair, report.** Follow the audit and repair sections below, then write the final report. Tell
    the user which Godot editor version to open the project with.
 
 Tools for this plan:
@@ -219,16 +262,21 @@ def _audit_items(info: dict) -> str:
 7. **Recovery log:** count the warnings and errors in `gdre_export.log` and list the distinct ones."""
     items = """1. **Inventory:** count scenes (`.unity`), prefabs, scripts (`.cs`), textures, audio clips, materials and
    animations under `05_project\\Assets`.
-2. **Missing scripts:** every `m_Script: {fileID: ..., guid: <guid>}` in scenes and prefabs whose guid has no
-   matching script `.meta` file. Count them and list the scenes and prefabs worst affected.
+2. **Missing scripts:** count every `m_Script: {fileID: 0}` (a lost script) in scenes and prefabs, and list the
+   files worst affected. Separately report, but do not count as missing, every `m_Script` whose `guid` has no
+   `.meta` file in the project: many of those are Unity package scripts (UI, TextMeshPro).
 3. **Missing asset references:** any other `guid:` in scenes, prefabs and materials with no matching `.meta`
    file (ignore Unity's built-in guids that start with `0000000000000000`).
-4. **Duplicate types:** the same class, struct or enum name defined in more than one `.cs` file in the same
-   namespace (a typical compile error when stub scripts repeat a real SDK's types). List them.
-5. **Script sanity:** unbalanced braces, decompiler error comments (`/* Error`, `// ERROR`), and compiler-
-   generated names that make code unreadable in more than a few lines.
+4. **Duplicate types:** the same top-level class, struct, enum or interface name defined in more than one `.cs`
+   file in the same namespace (a typical compile error when stub scripts repeat a real SDK's types). Partial
+   classes, nested types and generic types of different arity (`Event<T>` and `Event<T1,T2>`) are not
+   duplicates. List them.
+5. **Script sanity:** files with unbalanced braces (ignore braces inside strings and comments), and files that
+   carry a decompiler failure marker (`/* Error`, `// Could not decompile`, `// ERROR:`). An ordinary comment
+   that merely mentions an error is not a marker.
 6. **Build settings:** `ProjectSettings\\EditorBuildSettings.asset` lists at least one enabled scene, each
-   listed scene file exists, and you can name the main (first) scene.
+   listed scene file exists and is a real scene (YAML text holding at least one `GameObject:`), and you can name
+   the main (first) scene.
 7. **Packages:** namespaces the scripts use (`TMPro`, `UnityEngine.UI`, `Unity.InputSystem`, `Cinemachine`,
    `UnityEngine.Rendering.Universal`, `UnityEngine.Purchasing`) against `Packages\\manifest.json`; list missing ones.
 8. **Online and third-party SDKs:** where the code uses ads, analytics, purchases, login, cloud saves or
@@ -248,13 +296,15 @@ When the recovery steps are done, audit the result like a sceptical reviewer. Wr
 `reports\\audit\\` (Python if `python` is on PATH, otherwise PowerShell) and run them. **They may only read files:
 never run, import or load game code, and never use the network.**
 
-Work out these numbers, and write them to `reports\\AUDIT.json` and a readable `reports\\AUDIT.md`:
+Work out these numbers, and write them to `reports\\AGENT_AUDIT.json` and a readable `reports\\AGENT_AUDIT.md`.
+Never write a file whose name starts with `STUDIO_AUDIT`: those are the studio's own and are overwritten by it.
 
 {_audit_items(info)}
 
 Run the audit once after recovery (the "before" numbers) and again after every repair round. The studio also runs
-its own audit on your result afterwards (`reports\\AUDIT_05_project.json` and `AUDIT_06_playable.json`) and compares the
-two; only the studio's numbers are trusted, so do not edit those files.
+its own audit when the user presses "Audit the agent's 06_playable" (it writes `reports\\STUDIO_AUDIT_05_project.json`
+and `STUDIO_AUDIT_06_playable.json` and compares them). Only the studio's numbers are trusted, so make your own
+numbers match its definitions below, and do not edit its files.
 
 ## Repair what the evidence supports (bounded)
 
@@ -330,10 +380,15 @@ recover it, audit the result, run the bounded repair rounds, and write the final
 Write `reports\\RECOVERY_REPORT.md` with these parts:
 
 1. **Result level, honestly.** Choose one and say why:
-   - `L0 extracted`: the files were recovered, nothing more is claimed.
-   - `L1 audit clean`: the audit found no missing scripts, duplicate types, syntax problems or missing build
-     scene after repair.
+   - `L0 extracted`: the files were recovered, nothing more is claimed (also use this when there are no scripts
+     to audit).
    - `L1 audit partial`: some findings remain (list the numbers).
+   - `L1 audit incomplete`: you could not read everything (a file too large, a binary scene, a time limit), so
+     the numbers may be too low.
+   - `L1 audit clean with caveats`: no findings, but something the files cannot settle remains (script
+     references by GUID that are not in the project, or IL2CPP classes with no recovered logic). List them.
+   - `L1 audit clean`: every check ran over every file and found nothing, with no caveat at all. This is rare.
+     The studio's own audit decides the final level and uses these same words.
    You cannot run Unity or Godot, so **"compiles", "the scene loads" and "it plays" are Unverified**. Say so, and
    do not write "working" or "playable" anywhere.
 2. **Before and after audit numbers**, one row per audit item.
