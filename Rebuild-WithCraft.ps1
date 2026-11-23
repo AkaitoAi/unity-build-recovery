@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$ReportPath,
     [ValidateRange(1,2147483647)][int]$InputNumber = 1,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Task,
-    [string]$CraftCli = 'craft-anything-cli'
+    [string]$CraftCli = 'craft-anything-cli',
+    [ValidatePattern('^[A-Za-z0-9][\w .\-]{0,59}$')][string]$Backend
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +53,8 @@ if ($cli.Source -match '\.(cmd|bat)$' -and $prompt -match '[&|^%<>]') {
     throw 'This CLI is a .cmd or .bat shim, which cannot pass & | ^ % < > safely. Remove those characters from -Task.'
 }
 if ($PSVersionTable.PSVersion.Major -lt 7) { $prompt = $prompt.Replace('"', '\"') }
-& $cli.Source rebuild '-' $prompt --project-folder $draft --existing edit
+$backendArgs = if ($Backend) { @('--backend', $Backend) } else { @() }
+& $cli.Source rebuild '-' $prompt --project-folder $draft --existing edit @backendArgs
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     Write-Warning "Craft Anything exited with code $exitCode. The working copy is available for review."

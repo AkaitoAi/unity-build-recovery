@@ -521,6 +521,7 @@
   <nav>
     <button class="nav-btn active" onclick="switchNav('wizard')">🚀 Recovery Pipeline Wizard</button>
     <button class="nav-btn" onclick="switchNav('scripts')">🧠 AI Semantic Script Studio</button>
+    <button class="nav-btn" onclick="switchNav('craft')">✨ Craft Anything</button>
     <button class="nav-btn" onclick="switchNav('tools')">🛠️ System Tools Health (16/16)</button>
     <button class="nav-btn" onclick="switchNav('console')">📜 Live Diagnostic Console</button>
   </nav>
@@ -698,6 +699,45 @@
       </div>
     </div>
 
+    <!-- TAB: CRAFT ANYTHING -->
+    <div id="pane-craft" class="tab-pane">
+      <div class="card">
+        <div class="card-title"><span>✨ Craft Anything: have a coding agent add a missing system</span></div>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+          Runs the separate Craft Anything CLI on a <b>copy</b> of the rebuilt project (<code>craft-unity-…</code> in the workspace).
+          Your project files and the task are sent to the coding agent you choose and to its provider. Runs without prompts:
+          questions take the first choice and approvals are refused.
+        </p>
+        <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center;">
+          <label>CLI path (optional)</label>
+          <input type="text" id="craft-cli" class="input-field" placeholder="Leave empty to find craft-anything-cli on PATH">
+          <label>Coding agent</label>
+          <div style="display:flex;gap:8px;">
+            <select id="craft-agent" class="input-field" style="flex:1;"><option value="">First available</option></select>
+            <button class="btn" onclick="craftLoadAgents()">Refresh agents</button>
+            <button class="btn" onclick="craftDoctor()">Check install</button>
+          </div>
+          <label>Task</label>
+          <textarea id="craft-task" class="input-field" rows="4" maxlength="4000" placeholder="Implement a pause menu with Resume and Quit. Toggle with Escape and restore the previous time scale when closed."></textarea>
+          <label>Refinement rounds</label>
+          <input type="number" id="craft-rounds" class="input-field" value="2" min="0" max="5" style="width:90px;">
+        </div>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0;font-size:12px;">
+          <input type="checkbox" id="craft-confirm">
+          <span>I understand the project files and task are sent to the selected agent's provider, and I may share this project.</span>
+        </label>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-primary" id="craft-run" onclick="craftRun()">Run on a copy</button>
+          <button class="btn" onclick="craftStop()">Stop</button>
+          <span id="craft-status" style="font-size:12px;color:var(--text-muted);align-self:center;"></span>
+        </div>
+      </div>
+      <div class="card" style="flex:1;display:flex;flex-direction:column;">
+        <div class="card-title"><span>Craft Anything output</span></div>
+        <div class="console-box" id="craft-log" style="flex:1;"></div>
+      </div>
+    </div>
+
     <!-- TAB 4: LIVE LOGS -->
     <div id="pane-console" class="tab-pane">
       <div class="card" style="flex:1;display:flex;flex-direction:column;">
@@ -729,6 +769,55 @@ All 16 local recovery engines loaded and ready.
 
       if (tabName === 'tools') loadToolsHealth();
       if (tabName === 'scripts' && scriptsData.length === 0) scanScripts();
+    }
+
+    // ---- Craft Anything ----
+    let craftSeen = 0, craftTimer = null;
+    function craftCli() { return document.getElementById('craft-cli').value.trim(); }
+    async function craftLoadAgents() {
+      const status = document.getElementById('craft-status');
+      status.innerText = 'Looking for agents...';
+      const res = await fetch('/api/craft/agents?cli=' + encodeURIComponent(craftCli()));
+      const data = await res.json();
+      const select = document.getElementById('craft-agent');
+      const keep = select.value;
+      select.innerHTML = '<option value="">First available</option>' +
+        (data.agents || []).map(a => '<option value="' + esc(a) + '">' + esc(a) + '</option>').join('');
+      select.value = keep;
+      status.innerText = data.error ? data.error : (data.agents.length + ' agent(s) found');
+    }
+    async function craftDoctor() {
+      const res = await fetch('/api/craft/doctor?cli=' + encodeURIComponent(craftCli()));
+      const data = await res.json();
+      document.getElementById('craft-log').innerText = (data.error ? data.error + '\n' : '') + (data.output || '');
+    }
+    async function craftRun() {
+      const work = document.getElementById('input-work').value.trim();
+      if (!work) return alert('Choose a workspace folder on the Recovery tab first.');
+      const body = {
+        work_folder: work, task: document.getElementById('craft-task').value,
+        backend: document.getElementById('craft-agent').value, cli: craftCli(),
+        rounds: parseInt(document.getElementById('craft-rounds').value, 10),
+        confirm_send: document.getElementById('craft-confirm').checked
+      };
+      const res = await fetch('/api/craft/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok) return alert(data.message || 'Could not start.');
+      craftSeen = 0;
+      document.getElementById('craft-log').innerText = '';
+      craftPoll();
+    }
+    async function craftStop() { await fetch('/api/craft/stop', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}); }
+    async function craftPoll() {
+      clearTimeout(craftTimer);
+      const res = await fetch('/api/craft/status?after=' + craftSeen);
+      const d = await res.json();
+      const box = document.getElementById('craft-log');
+      if (d.log.length) { box.innerText += (box.innerText ? '\n' : '') + d.log.join('\n'); box.scrollTop = box.scrollHeight; }
+      craftSeen = d.next;
+      document.getElementById('craft-status').innerText = d.running ? 'Running...' : (d.message || '');
+      document.getElementById('craft-run').disabled = d.running;
+      if (d.running) craftTimer = setTimeout(craftPoll, 1500);
     }
 
     // Logging helper

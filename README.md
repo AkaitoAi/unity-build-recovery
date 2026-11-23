@@ -142,7 +142,13 @@ The runner keeps attempt logs and partial output, continues with independent sta
 
 ## Optional gameplay reconstruction with Craft Anything
 
-Use this after recovery, when you have an exported Unity project and one missing system to implement. Install the [Craft Anything CLI](https://github.com/storytold/craft-anything#get-started), sign in to its supported coding agent, and run `craft-anything-cli doctor`. The step can prompt for decisions while it rebuilds, so it is not unattended.
+Use this after recovery, when you have an exported Unity project and one missing system to implement. It is available in the Studio (the **Craft Anything** tab) and from PowerShell.
+
+**Choosing the coding agent.** Craft Anything, not this repository, talks to the agent. The Studio tab fills its list from `craft-anything-cli ai list` and `ai detect` and passes your choice as `--backend`. Leave it on "First available" to let Craft Anything pick. From PowerShell, pass `-Backend 'Claude Code'` (a name from `craft-anything-cli ai list`). Sign in to the agent with its own tool; this repository never sees the sign-in. "Check install" runs `craft-anything-cli doctor`.
+
+**In the Studio.** Pick the workspace on the Recovery tab, enter the task, tick the confirmation that your project files and task go to the agent's provider, and press "Run on a copy". The run is unattended: questions take the first choice and approvals are refused. The studio copies `Assets`, `Packages` and `ProjectSettings` from `05_project` into a new `craft-unity-…` folder in the workspace and never edits the original. If the CLI is a `.cmd` or `.bat` shim, the task cannot contain `& | ^ % < > "`. The tab was tested against a stand-in CLI only, not a real Craft Anything install.
+
+**From PowerShell.** Install the [Craft Anything CLI](https://github.com/storytold/craft-anything#get-started), sign in to its supported coding agent, and run `craft-anything-cli doctor`. The step can prompt for decisions while it rebuilds, so it is not unattended.
 
 ```powershell
 .\Rebuild-WithCraft.ps1 -ReportPath 'D:\Recovery\run-EXAMPLE\recovery-report.json' -InputNumber 1 -Task 'Implement a pause menu with Resume and Quit. It should toggle with Escape and restore the previous time scale when closed.'
