@@ -1,7 +1,7 @@
 <#
   Drive AssetRipper 2.x headless (it is a local web server) so exports can be scripted.
   Usage:
-    powershell -NoProfile -ExecutionPolicy Bypass -File assetripper-headless.ps1 -InputPath "D:\Game\Game_Data" -OutputPath "D:\Test Projects\Recovery\AR_Out"
+    powershell -NoProfile -ExecutionPolicy Bypass -File assetripper-headless.ps1 -InputPath "D:\Game\Game_Data" -OutputPath "D:\Recovery\AR_Out"
     ... -Mode PrimaryContent   # export only primary content instead of a full Unity project
   InputPath may be a file (bundle/assets/apk-extracted file) or a folder (the *_Data folder, or an extracted APK folder).
 #>
