@@ -6,7 +6,7 @@ Reference for the studio. The short version is in the [README](../README.md).
 
 | Engine | Input | What you get back | Tool |
 | --- | --- | --- | --- |
-| Unity (Mono and IL2CPP) | APK, XAPK, ZIP | Assets, scenes, C# for Mono; type and method layout (not method bodies) for IL2CPP; a Unity project folder to finish by hand | AssetRipper, Il2CppDumper, Cpp2IL, JADX |
+| Unity (Mono and IL2CPP) | APK, XAPK, ZIP | Assets, scenes, C# for Mono; type and method layout (not method bodies) for IL2CPP; a Unity project folder to finish by hand | AssetRipper, ILSpyCmd, Il2CppDumper, Cpp2IL, JADX |
 | Godot | APK, PCK, or an EXE with an embedded PCK | A Godot project folder (`project.godot`, scenes, resources, scripts decompiled where the version is supported) | GDRE Tools |
 
 Other engines are not recovered yet. The studio detects Godot by a `.pck` file, `libgodot` or an embedded `GDPC` footer. An encrypted Godot game needs its encryption key, and the studio does not take a key yet, so it reports the failure and stops.
@@ -23,6 +23,8 @@ A Python UI that scans an APK, XAPK or ZIP, unpacks it, runs the recovery tools 
 - The recovery tools, in the folders listed below.
 
 ## Tool folders
+
+For Mono code recovery, install ILSpyCmd with `dotnet tool install --global ilspycmd` or use `--tool-path "<tools root>\ILSpy"` in place of `--global`. Current ILSpyCmd packages require .NET SDK 10.0.100 or newer to install. The Code Recovery stage reads game DLLs from extracted `Managed` folders and writes C# projects to `03_scripts/mono`.
 
 The studio finds its tools in this order: the `RE_TOOLS` environment variable, then the folder above `studio/` if it contains `7-Zip`, then `<repo>\.tools`. Create these folders there (download links are on each project's releases page):
 

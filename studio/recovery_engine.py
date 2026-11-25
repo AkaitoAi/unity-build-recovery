@@ -4,7 +4,7 @@ Executes the full recovery pipeline completely offline:
 - Stage 0: Intake & SHA256 record
 - Stage 1: Extraction via 7-Zip (with nested split APK unpacking)
 - Stage 2: Asset Ripping (AssetRipper / Web extractor)
-- Stage 3: Code Dumping (Il2CppDumper / Cpp2IL / Web assets)
+- Stage 3: Code Recovery (ILSpy / Il2CppDumper / Cpp2IL / Web assets)
 - Stage 4: Project scaffolding and SDK stubs (the result is not compiled or verified)
 - Stage 5: RECOVERY_REPORT.md generation
 """
@@ -17,6 +17,8 @@ import threading
 import shutil
 import subprocess
 import datetime
+import tempfile
+from pathlib import Path
 from typing import Callable, Optional
 from scanner import inspect_game, TOOLS_ROOT, SEVEN_ZIP
 from unity_playable_scaffolder import scaffold_unity_project, setup_playable_web_runner, INSTALLED_EDITORS
@@ -620,19 +622,88 @@ class RecoveryPipeline:
                  if produced else "  JADX produced nothing.")
         return produced
 
+    def recover_mono_projects(self, assemblies):
+        local_cli = Path(TOOLS_ROOT) / "ILSpy" / "ilspycmd.exe"
+        global_cli = Path.home() / ".dotnet" / "tools" / "ilspycmd.exe"
+        path_cli = shutil.which("ilspycmd")
+        candidates = [local_cli, *([Path(path_cli)] if path_cli else []), global_cli]
+        cli = None
+        for candidate in candidates:
+            # New .NET SDKs install a .cmd launcher for the native Windows tool.
+            # Call the executable directly so assembly paths never enter cmd.exe.
+            native = list(candidate.parent.glob(
+                ".store/ilspycmd/*/ilspycmd.win-x64/*/tools/any/win-x64/ilspycmd.exe"
+            ))
+            if native:
+                cli = max(native, key=lambda path: tuple(
+                    int(part) for part in path.parts[-5].split("-")[0].split(".")
+                ))
+                break
+            if candidate.is_file() and candidate.suffix.lower() not in {".cmd", ".bat"}:
+                cli = candidate
+                break
+        if not cli:
+            self.log("ilspycmd is missing. Install it with dotnet tool install --global ilspycmd and retry Code Recovery.")
+            return
+
+        extracted = Path(self.dir_01_extracted)
+        scripts = Path(self.dir_03_scripts).resolve()
+        for assembly in assemblies:
+            output = scripts / "mono" / assembly.relative_to(extracted).parent / assembly.stem
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self.log(f"Decompiling {assembly.relative_to(extracted)} with ILSpy...")
+            try:
+                with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+                    project = Path(staging) / "project"
+                    result = _run(
+                        [str(cli), "-p", "-o", str(project), "-r",
+                         str(assembly.parent.resolve()), str(assembly.resolve())],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        errors="replace", timeout=600,
+                    )
+                    if result.returncode or not any(project.glob("*.csproj")):
+                        detail = (result.stderr or result.stdout).strip()[:1000]
+                        self.log(f"  ILSpy failed for {assembly.name} (exit {result.returncode}). {detail}")
+                        continue
+                    backup = Path(staging) / "previous"
+                    if output.exists():
+                        output.rename(backup)
+                    try:
+                        project.rename(output)
+                    except OSError:
+                        if backup.exists():
+                            backup.rename(output)
+                        raise
+                    self.log(f"  C# project saved to {output.relative_to(scripts)}.")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.log(f"  ILSpy failed for {assembly.name}. {exc}")
+
     def run_stage_3_code_recovery(self, info: dict) -> bool:
         self.log(f"--- [STAGE 3] Code Recovery & Disassembly ---")
 
         so_path = None
         metadata_path = None
+        has_native = False
+        assemblies = []
+        framework = re.compile(
+            r"^(mscorlib|netstandard|System(\..+)?|Mono\..+|Microsoft\..+|UnityEngine(\..+)?|Unity\..+)$",
+            re.IGNORECASE,
+        )
 
-        for root, dirs, files in os.walk(self.dir_01_extracted):
+        for root, _dirs, files in os.walk(self.dir_01_extracted):
+            directory = Path(root)
             for f in files:
+                if f.lower() in {"libil2cpp.so", "gameassembly.dll"}:
+                    has_native = True
                 if f == "libil2cpp.so":
                     if "arm64" in root or not so_path:
                         so_path = os.path.join(root, f)
                 elif f == "global-metadata.dat":
                     metadata_path = os.path.join(root, f)
+                elif directory.name.lower() == "managed":
+                    candidate = directory / f
+                    if candidate.suffix.lower() == ".dll" and not framework.fullmatch(candidate.stem):
+                        assemblies.append(candidate)
 
         if so_path and metadata_path:
             self.log(f"Found IL2CPP Binary: {so_path}")
@@ -666,6 +737,9 @@ class RecoveryPipeline:
             # ARM64, so fall back to an ISIL dump, which does work there.
             if not os.path.exists(os.path.join(self.dir_03_il2cpp, "dump.cs")):
                 self.generate_isil_dump(info)
+
+        elif assemblies and not (has_native or metadata_path or "il2cpp" in info.get("backend", "").lower()):
+            self.recover_mono_projects(sorted(assemblies))
 
         elif info.get("has_web_assets") or "Capacitor" in info.get("engine", ""):
             self.log("Extracting JavaScript / TypeScript application sources...")
