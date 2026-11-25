@@ -20,7 +20,7 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from paths import TOOLS_ROOT, NONCE_PATH, LOG_DIR, studio_version
+from paths import TOOLS_ROOT, NONCE_PATH, LOG_DIR, studio_version, find_ilspycmd
 import logging
 import logging.handlers
 import recovery_engine
@@ -701,7 +701,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         with PIPELINE_LOCK:
             return busy_reason(work) or "Another run is in progress."
 
-    STAGE_TOOLS = {1: ("7-Zip",), 2: ("AssetRipper",), 3: ("Cpp2IL",), 4: ()}
+    STAGE_TOOLS = {1: ("7-Zip",), 2: ("AssetRipper",), 4: ()}
 
     def handle_pipeline_stage(self, body):
         src = str(body.get("source", "")).strip()
@@ -715,9 +715,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         if info.get("engine") == "Godot":
             raise ValueError("Godot games recover in one step. Use the full recovery button.")
         # A single stage needs the same approval as a full run for the tools it uses.
-        needed = list(self.STAGE_TOOLS[stage])
-        if stage == 3 and not (info.get("has_il2cpp") and not tool_needs._il2cpp_tool_present()):
-            needed = []                       # only an IL2CPP build needs a dumper
+        needed = tool_needs.code_recovery_tools(info) if stage == 3 else self.STAGE_TOOLS[stage]
         missing = tool_needs.missing_named(needed)
         if missing:
             self.send_json({"status": "needs_tools", "engine": info.get("engine", ""), "tools": missing,
@@ -1068,6 +1066,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             {"name": "Il2CppDumper", "role": "IL2CPP Symbol & DummyDll Dumper", "path": os.path.join(TOOLS_ROOT, "Il2CppDumper", "Il2CppDumper.exe")},
             {"name": "Cpp2IL", "role": "AOT Binary to C# Pseudocode", "path": _newest_cpp2il()},
             {"name": "ILSpy (GUI)", "role": "Managed C# Assembly Decompiler", "path": os.path.join(TOOLS_ROOT, "ILSpy", "ILSpy.exe")},
+            {"name": "ILSpyCmd", "role": "Unity Mono C# Project Recovery", "path": find_ilspycmd() or ""},
             {"name": "Mono.Cecil", "role": "IL Bytecode Inspector & Patching", "path": os.path.join(TOOLS_ROOT, "Mono.Cecil", "lib", "net40", "Mono.Cecil.dll")},
             {"name": "Ghidra 12.1.4 (NSA)", "role": "Deep Native Disassembler/Decompiler", "path": os.path.join(TOOLS_ROOT, "ghidra", "support", "analyzeHeadless.bat")},
             {"name": "JADX", "role": "Android DEX / Java Decompiler", "path": _newest_jadx()},

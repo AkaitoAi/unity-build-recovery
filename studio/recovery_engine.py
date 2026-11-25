@@ -19,6 +19,7 @@ import subprocess
 import datetime
 import tempfile
 from pathlib import Path
+from paths import find_ilspycmd
 from typing import Callable, Optional
 from scanner import inspect_game, TOOLS_ROOT, SEVEN_ZIP
 from unity_playable_scaffolder import scaffold_unity_project, setup_playable_web_runner, INSTALLED_EDITORS
@@ -623,25 +624,7 @@ class RecoveryPipeline:
         return produced
 
     def recover_mono_projects(self, assemblies):
-        local_cli = Path(TOOLS_ROOT) / "ILSpy" / "ilspycmd.exe"
-        global_cli = Path.home() / ".dotnet" / "tools" / "ilspycmd.exe"
-        path_cli = shutil.which("ilspycmd")
-        candidates = [local_cli, *([Path(path_cli)] if path_cli else []), global_cli]
-        cli = None
-        for candidate in candidates:
-            # New .NET SDKs install a .cmd launcher for the native Windows tool.
-            # Call the executable directly so assembly paths never enter cmd.exe.
-            native = list(candidate.parent.glob(
-                ".store/ilspycmd/*/ilspycmd.win-x64/*/tools/any/win-x64/ilspycmd.exe"
-            ))
-            if native:
-                cli = max(native, key=lambda path: tuple(
-                    int(part) for part in path.parts[-5].split("-")[0].split(".")
-                ))
-                break
-            if candidate.is_file() and candidate.suffix.lower() not in {".cmd", ".bat"}:
-                cli = candidate
-                break
+        cli = find_ilspycmd()
         if not cli:
             self.log("ilspycmd is missing. Install it with dotnet tool install --global ilspycmd and retry Code Recovery.")
             return

@@ -24,9 +24,9 @@ A Python UI that scans an APK, XAPK or ZIP, unpacks it, runs the recovery tools 
 
 ## Tool folders
 
-For Mono code recovery, install ILSpyCmd with `dotnet tool install --global ilspycmd` or use `--tool-path "<tools root>\ILSpy"` in place of `--global`. Current ILSpyCmd packages require .NET SDK 10.0.100 or newer to install. The Code Recovery stage reads game DLLs from extracted `Managed` folders and writes C# projects to `03_scripts/mono`.
+The Tools tab shows ILSpyCmd separately from the ILSpy GUI. When a Unity Mono recovery needs ILSpyCmd, Studio checks for it and displays installation instructions if it is missing. Install it with `dotnet tool install --global ilspycmd` or use `--tool-path "<tools root>\ILSpy"` in place of `--global`. Current ILSpyCmd packages require .NET SDK 10.0.100 or newer to install. The Code Recovery stage reads game DLLs from extracted `Managed` folders and writes C# projects to `03_scripts/mono`.
 
-The studio finds its tools in this order: the `RE_TOOLS` environment variable, then the folder above `studio/` if it contains `7-Zip`, then `<repo>\.tools`. Create these folders there (download links are on each project's releases page):
+The studio checks `RE_TOOLS`, then the repository and its parent for the shared toolkit, then `<repo>\.tools`. Create these folders there (download links are on each project's releases page):
 
 | Folder | Tool | Needed for |
 | --- | --- | --- |

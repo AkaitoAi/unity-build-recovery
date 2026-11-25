@@ -10,7 +10,7 @@ import os
 
 import rea as rea_support
 import tool_updates
-from paths import TOOLS_ROOT
+from paths import TOOLS_ROOT, find_ilspycmd
 from scanner import SEVEN_ZIP
 
 
@@ -25,11 +25,17 @@ def required_tools(info: dict) -> list:
         return [{"tool": "GDRE Tools"}]
     if engine == "Unity":
         needed = [{"tool": "7-Zip", "manual": True}, {"tool": "AssetRipper"}]
-        if info.get("has_il2cpp") and not _il2cpp_tool_present():
-            # Either one is enough: Il2CppDumper, or Cpp2IL (which handles newer metadata).
-            needed.append({"tool": "Cpp2IL"})
+        needed.extend({"tool": name} for name in code_recovery_tools(info))
         return needed
     return []
+
+
+def code_recovery_tools(info: dict) -> tuple:
+    if info.get("has_il2cpp"):
+        return () if _il2cpp_tool_present() else ("Cpp2IL",)
+    if info.get("has_mono"):
+        return ("ILSpyCmd",)
+    return ()
 
 
 def _il2cpp_tool_present() -> bool:
@@ -45,6 +51,8 @@ def _present(name: str) -> bool:
         return bool(rea_support.find_rea())  # the package and Node.js must both be there
     if name == "Cpp2IL":
         return _cpp2il_present()
+    if name == "ILSpyCmd":
+        return bool(find_ilspycmd())
     tool = _tool(name)
     return bool(tool and os.path.exists(tool["marker"]))
 
@@ -63,6 +71,10 @@ def describe(name: str) -> dict:
     tool = _tool(name)
     base = {"name": name, "manual": False, "can_install": False, "url": "", "release_url": "",
             "version": "", "size_mb": 0, "sha256": "", "note": ""}
+    if name == "ILSpyCmd":
+        base.update(manual=True, url="https://www.nuget.org/packages/ilspycmd",
+                    note="With .NET SDK 10.0.100 or newer, run: dotnet tool install --global ilspycmd")
+        return base
     if not tool:
         base.update(manual=True, note="Unknown tool.")
         return base
