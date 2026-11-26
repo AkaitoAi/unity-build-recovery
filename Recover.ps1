@@ -5,7 +5,8 @@ param(
     [string]$WorkRoot = (Join-Path $PSScriptRoot 'recovery-output'),
     [ValidateRange(1,10)][int]$Attempts = 3,
     [ValidateRange(1,240)][int]$TimeoutMinutes = 120,
-    [switch]$VerifyInUnity
+    [switch]$VerifyInUnity,
+    [switch]$SkipRea
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -16,7 +17,7 @@ function Invoke-WithRetry([scriptblock]$Operation) {
         catch {
             if ($attempt -eq $Attempts) { throw }
             # These failures repeat identically, so retrying only multiplies the wait.
-            if ($_.Exception.Message -match '^[\w-]+ timed out\.$|requires both|produced no dump|Could not identify|was not found in the default|contains a symbolic link|checksum verification|unsafe archive') { throw }
+            if ($_.Exception.Message -match '^[\w-]+ timed out\.$|requires both|produced no dump|Could not identify|was not found in the default|contains a symbolic link|checksum verification|unsafe archive|^REA: ') { throw }
             Write-Warning "Attempt $attempt failed. $($_.Exception.Message)"
             Start-Sleep -Seconds (5 * $attempt)
         }
@@ -141,6 +142,21 @@ foreach ($path in $InputPath) {
             $studio = Install-ZipTool 'AssetStudioMod-0.19.0' 'https://github.com/aelurum/AssetStudioMod/releases/download/v0.19.0/AssetStudioModCLI_net472_win32_64.zip' 'cad5b9e2084dda85007012f94c6d3ad1944ba153796c4e80027792d0ba7be285' 'AssetStudioModCLI.exe'
             Invoke-RecoveryTool $studio @($source,'-m','info') $directory 'assetstudio'
             Join-Path $directory 'assetstudio.log'
+        }
+        $apks = @($build.Apks)
+        if (!$item.PSIsContainer -and $item.Extension -eq '.apk') { $apks += Get-Item -LiteralPath (Join-Path $snapshot $item.Name) }
+        if ($SkipRea) {
+            $result.stages['rea'] = @{ status = 'skipped'; error = 'Skipped with -SkipRea.' }
+        }
+        else {
+            $node = Get-NodeForRea
+            if (!$node) {
+                $result.stages['rea'] = @{ status = 'skipped'; error = 'REA needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ on PATH.' }
+                Write-Warning 'REA skipped: install Node.js 22.23.4+, 24.22.1+ or 26.12.1+ to add the REA stage.'
+            }
+            else {
+                $null = Invoke-RecoveryStage 'rea' { param($directory) Invoke-ReaRecovery $build $apks $node $directory }
+            }
         }
         if ($build.Backend -eq 'Mono') {
             $null = Invoke-RecoveryStage 'mono' { param($directory) Invoke-MonoRecovery $build.Managed $directory }

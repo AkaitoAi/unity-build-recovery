@@ -39,6 +39,7 @@ The script prints the `run-…` folder it created under `-WorkRoot`. Open `recov
 | `-Attempts` | Tries per stage, 1 to 10. Failures that repeat identically (timeouts, unsafe archives, missing prerequisites) are not retried. | 3 |
 | `-TimeoutMinutes` | Time limit per tool run, 1 to 240. | 120 |
 | `-VerifyInUnity` | After export, imports the project in the matching Unity Editor. Needs that exact editor installed and licensed under the default Unity Hub folder. | off |
+| `-SkipRea` | Leaves out the REA stage. | off |
 
 The exit code is 0 when every input finishes and 1 when any input is partial or failed, after the whole batch has run.
 
@@ -49,9 +50,12 @@ The script copies and hashes each input, rejects archives with unsafe paths or a
 | Detected input | Automatic stages |
 | --- | --- |
 | Any supported input | AssetRipper project export and AssetStudioMod asset inventory |
+| Any supported input, when Node.js 22.23.4+, 24.22.1+ or 26.12.1+ is on PATH | [REA](https://github.com/morluto/rea) static checks: `inspect-il2cpp-metadata` with method addresses and a Ghidra seed file for IL2CPP, `inspect-managed-members` for `Assembly-CSharp*.dll`, `inspect-apk-signature` for APKs, and `inspect-artifact` for up to 25 UnityFS bundles. The stage writes a summary log and Evidence file per check plus `rea-index.json`. Without Node.js the stage is recorded as `skipped`. |
 | Mono managed assemblies | .NET 8 SDK and ilspycmd decompile each game assembly to a C# project. Engine and framework assemblies are skipped. |
 | IL2CPP | Il2CppDumper for metadata, type and method layout, and dummy assemblies. For Android builds with several CPU architectures, it uses the ARM64 libraries. |
 | Android DEX | JADX and Eclipse Temurin Java, with separate Java source output |
+
+REA comes from the `rea-agents` npm package, pinned to 6.10.1. The runner first reuses a toolkit copy in `%RE_TOOLS%\rea-runtime` or in `rea-runtime` beside the repository, where Recovery Studio also looks. Otherwise it installs into `.tools\rea-runtime-6.10.1` with npm's integrity check and without install scripts.
 
 ZIP downloads are checked against published checksums. The .NET SDK comes from Microsoft's .NET 8 release feed, and ilspycmd comes from NuGet without a checksum. The runner never launches the input's executables.
 

@@ -4,6 +4,8 @@ function Invoke-RecoveryTool($Executable, [string[]]$Arguments, $Directory, $Log
     $stdin = Join-Path $Directory 'stdin.txt'
     if (!(Test-Path -LiteralPath $stdin)) { [IO.File]::WriteAllText($stdin, '') }
     $process = Start-Process -FilePath $Executable -ArgumentList $commandLine -WorkingDirectory $Directory -WindowStyle Hidden -PassThru -RedirectStandardInput $stdin -RedirectStandardOutput (Join-Path $Directory "$LogName.log") -RedirectStandardError (Join-Path $Directory "$LogName-errors.log")
+    # Windows PowerShell 5.1 reports an empty ExitCode unless the handle is opened while the process runs.
+    $null = $process.Handle
     try {
         if (!$process.WaitForExit($TimeoutMinutes * 60000)) { throw "$LogName timed out." }
         if ($process.ExitCode -ne 0) { throw "$LogName exited with code $($process.ExitCode)." }
@@ -55,6 +57,8 @@ function Get-BuildInfo($Source, $Extension) {
     $dex = @($files | Where-Object { $_.Name -match '^classes\d*\.dex$' })
     $native = @($files | Where-Object Name -In 'GameAssembly.dll','libil2cpp.so')
     $metadata = @($files | Where-Object Name -EQ 'global-metadata.dat')
+    $apks = @($files | Where-Object Extension -EQ '.apk')
+    $bundles = @($files | Where-Object { $_.Name -eq 'data.unity3d' -or $_.Extension -in '.bundle','.unity3d','.ab','.assetbundle' })
     $managed = @($files | Where-Object {
         $_.Extension -eq '.dll' -and $_.Directory.Name -eq 'Managed' -and
         # Engine and framework assemblies are not game code; decompiling them wastes time.
@@ -82,7 +86,60 @@ function Get-BuildInfo($Source, $Extension) {
         Native = $native
         Metadata = $metadata
         Managed = $managed
+        Apks = $apks
+        Bundles = $bundles
     }
+}
+
+function Invoke-ReaRecovery($Build, $Apks, $Node, $Directory, [int]$MaxBundles = 25) {
+    # Static, read-only REA checks (github.com/morluto/rea). REA never runs the input.
+    $rea = Get-Rea $Node $Directory
+    $checks = @()
+    if ($Build.Backend -eq 'IL2CPP' -and $Build.Metadata.Count) {
+        $metadata = $Build.Metadata | Sort-Object FullName | Select-Object -First 1
+        $extra = @()
+        if ($Build.Native.Count) {
+            $binary = $Build.Native | Sort-Object @{Expression = { $_.Directory.Name -ne 'arm64-v8a' }}, FullName | Select-Object -First 1
+            $extra = @('--binary', $binary.FullName, '--ghidra-seeds', (Join-Path $Directory 'il2cpp-ghidra-seeds.txt'))
+        }
+        $checks += ,@('il2cpp-metadata', 'inspect-il2cpp-metadata', $metadata.FullName, $extra)
+    }
+    $index = 0
+    foreach ($assembly in $Build.Managed | Where-Object BaseName -Like 'Assembly-CSharp*') {
+        $index++
+        $checks += ,@("managed-members-$index", 'inspect-managed-members', $assembly.FullName, @())
+    }
+    $index = 0
+    foreach ($apk in $Apks) {
+        $index++
+        $checks += ,@("apk-signature-$index", 'inspect-apk-signature', $apk.FullName, @())
+    }
+    $index = 0
+    foreach ($bundle in $Build.Bundles | Sort-Object Length -Descending | Select-Object -First $MaxBundles) {
+        $index++
+        $checks += ,@("bundle-$index", 'inspect-artifact', $bundle.FullName, @('--integrity-policy', 'record-and-continue'))
+    }
+    if (!$checks.Count) { throw 'REA: nothing in this input for REA to inspect.' }
+
+    $report = @()
+    $failed = @()
+    foreach ($check in $checks) {
+        $name, $command, $target, $extra = $check
+        $evidence = Join-Path $Directory "$name.evidence.json"
+        try {
+            Invoke-RecoveryTool $Node (@($rea, $command, $target) + $extra + @('--detail', 'summary', '--evidence_output', $evidence, '--json')) $Directory "rea-$name"
+            $status = 'complete'
+        }
+        catch {
+            $status = 'failed'
+            $failed += "${name}: $($_.Exception.Message)"
+        }
+        $report += [pscustomobject]@{ check = $name; command = $command; target = $target; status = $status
+                                      summary = (Join-Path $Directory "rea-$name.log"); evidence = $evidence }
+    }
+    ConvertTo-Json -InputObject $report -Depth 3 | Set-Content -LiteralPath (Join-Path $Directory 'rea-index.json') -Encoding UTF8
+    if ($failed.Count) { throw ("REA: $($failed.Count) of $($checks.Count) checks failed. " + ($failed -join '; ')) }
+    return $Directory
 }
 
 function Invoke-MonoRecovery($Assemblies, $Directory) {
