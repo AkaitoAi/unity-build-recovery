@@ -340,6 +340,14 @@ def build_prompt(source: str, work: str, info: dict, rea: dict = None, rea_via_m
     else:
         plan = _other_plan(source, work, info)
     rea_block = _rea_section(info, rea, rea_via_mcp) if rea else ""
+    unity_handoff = ""
+    if engine == "Unity":
+        unity_handoff = """
+6. **Reconstruction handoff.** Identify the recovered scene pools, meshes, materials, shaders, atlas textures,
+   sprite rectangles and borders, TMP fonts, and audio to reuse. List the level data and dump.cs locations,
+   gameplay mechanics they support, and online SDKs to stub offline. Point the user to the optional Craft Anything
+   reconstruction step for work on a trusted copy with Unity Play Mode verification.
+"""
 
     return f"""# Recover this game, audit what you recovered, and repair what you can
 
@@ -399,5 +407,6 @@ Write `reports\\RECOVERY_REPORT.md` with these parts:
 5. **What the user does next:** open `06_playable` in the exact editor version, read the console, load the main
    scene, and send the errors back so another round can fix them.
 
+{unity_handoff}
 When the report is written, print a five-line summary (level, audit numbers, biggest gaps) and stop.
 """
