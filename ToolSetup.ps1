@@ -30,6 +30,47 @@ function Install-ZipTool($Name, $Url, $Hash, $Entry, $Algorithm = 'SHA256') {
     }
 }
 
+$script:ReaVersion = '6.10.1'
+
+function Get-NodeForRea {
+    # REA needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+. Returns node.exe, or $null when none is usable.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$node) { return $null }
+    try { $version = [version]((& $node.Source --version).Trim().TrimStart('v')) } catch { return $null }
+    $supported = ($version.Major -eq 22 -and $version -ge [version]'22.23.4') -or
+        ($version.Major -eq 24 -and $version -ge [version]'24.22.1') -or
+        ($version -ge [version]'26.12.1')
+    if ($supported) { return $node.Source }
+    return $null
+}
+
+function Get-Rea($Node, $AttemptRoot) {
+    # Reuse a toolkit copy (RE_TOOLS or the folder above the repo, as the studio does), else the cache.
+    $entry = 'node_modules\rea-agents\scripts\rea.mjs'
+    $candidates = @()
+    if ($env:RE_TOOLS) { $candidates += Join-Path $env:RE_TOOLS "rea-runtime\$entry" }
+    $candidates += Join-Path (Split-Path -Parent $PSScriptRoot) "rea-runtime\$entry"
+    $cached = Join-Path $toolRoot "rea-runtime-$script:ReaVersion"
+    $candidates += Join-Path $cached $entry
+    foreach ($candidate in $candidates) { if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate } }
+
+    $npm = Join-Path (Split-Path -Parent $Node) 'node_modules\npm\bin\npm-cli.js'
+    if (!(Test-Path -LiteralPath $npm -PathType Leaf)) { throw 'REA requires npm next to node.exe.' }
+    Invoke-WithRetry {
+        $staging = Join-Path $toolRoot ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $staging | Out-Null
+        try {
+            # npm checks the registry's integrity hash. Install scripts are skipped: static checks do not need them.
+            Invoke-RecoveryTool $Node @($npm,'install','--prefix',$staging,'--ignore-scripts','--no-audit','--no-fund',"rea-agents@$script:ReaVersion") $AttemptRoot 'rea-install'
+            if (!(Test-Path -LiteralPath (Join-Path $staging $entry) -PathType Leaf)) { throw 'REA installation did not produce rea.mjs.' }
+            try { [IO.Directory]::Move($staging, $cached) }
+            catch { if (!(Test-Path -LiteralPath (Join-Path $cached $entry) -PathType Leaf)) { throw } }
+        }
+        finally { if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force } }
+    }
+    return (Join-Path $cached $entry)
+}
+
 function Get-AssetRipper {
     Install-ZipTool 'AssetRipper-2.0.0' 'https://github.com/AssetRipper/AssetRipper/releases/download/2.0.0/AssetRipper_win_x64.zip' '9a7ef0e7c5c3ea5b90b4e6d855e2d98d5f7ec8c3f9e26fccbc194c6a7b01baf7' 'AssetRipper.GUI.Free.exe'
 }
